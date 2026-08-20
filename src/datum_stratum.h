@@ -45,9 +45,15 @@
 
 #ifndef T_DATUM_TEMPLATE_DATA
 	#include "datum_blocktemplates.h"
+	#include "datum_header_v2.h"
 #endif
 
 #define MAX_STRATUM_JOBS 256
+
+// A JSON-RPC "id" may be any type, and BLAKE2b miners send strings. It is
+// carried as the text that arrived and echoed back unchanged, bounded here
+// because the field is attacker-controlled and otherwise unlimited.
+#define MAX_STRATUM_REQUEST_ID_CHARS 64
 
 #define MAX_COINBASE_TYPES 6
 #define COINBASE_TYPE_TINY 0 // "empty", just pays pool
@@ -123,7 +129,6 @@ typedef struct {
 	int global_index;
 	
 	char job_id[24];
-	char prevhash[68];
 	unsigned char prevhash_bin[32];
 	char version[10];
 	uint32_t version_uint;
@@ -137,10 +142,7 @@ typedef struct {
 	T_DATUM_TEMPLATE_DATA *block_template;
 	
 	unsigned char merklebranch_count;
-	char merklebranches_hex[24][72];
 	unsigned char merklebranches_bin[24][32];
-	
-	char merklebranches_full[4096];
 	
 	// when fetching the coinbaser, we'll just stash all of the possible and valid output scripts here
 	T_DATUM_TXN_OUTPUT available_coinbase_outputs[512];
@@ -175,6 +177,18 @@ typedef struct {
 	bool is_datum_job;
 	unsigned char datum_job_idx;
 	unsigned char datum_coinbaser_id;
+	
+	// BLAKE2b hardfork (PR #359). Every job uses the 164-byte version 2 header
+	// and the BLAKE2b proof of work; this gateway serves no SHA256d work.
+	uint16_t header_txcount;   // transactions in the block, including the coinbase
+	uint8_t header_flags;      // m_flags: ASIC profile in bits 0-1, time offset in bit 2
+	// In version 2 the extranonce lives in the header, not the coinbase, so the
+	// coinbase is fixed for the whole job apart from one byte: the miner's
+	// proof-of-target difficulty, which still has to be committed somewhere the
+	// proof of work covers. It stays where version 1 puts it, at
+	// target_pot_index in the coinbase, which means the merkle root, h1, h2 and
+	// therefore coinb1 all depend on the miner's current difficulty and cannot
+	// be cached per job. See stratum_job_compute_header_v2().
 } T_DATUM_STRATUM_JOB;
 
 typedef struct T_DATUM_STRATUM_THREADPOOL_DATA {
@@ -216,10 +230,6 @@ typedef struct {
 	uint64_t connect_tsms;
 	char useragent[128];
 	char last_auth_username[192];
-	
-	bool extension_version_rolling;
-	uint32_t extension_version_rolling_mask;
-	unsigned char extension_version_rolling_bits;
 	
 	bool extension_minimum_difficulty;
 	double extension_minimum_difficulty_value;
@@ -267,7 +277,15 @@ extern T_DATUM_STRATUM_JOB *global_cur_stratum_jobs[MAX_STRATUM_JOBS];
 const char *datum_stratum_mod_username(const char *username_s, char *username_buf, size_t username_buf_sz, uint16_t share_rnd, const char *modname, size_t modname_len);
 
 int send_mining_notify(T_DATUM_CLIENT_DATA *c, bool clean, bool quickdiff, bool new_block);
-void update_stratum_job(T_DATUM_TEMPLATE_DATA *block_template, bool new_block, int job_state);
+bool datum_stratum_request_id(json_t *id_obj, char *buf, size_t buf_size);
+unsigned char stratum_client_pot_byte(const T_DATUM_MINER_DATA *m, bool quickdiff, unsigned int job_index);
+// Returns false when no job was published, which happens below the BLAKE2b
+// activation height: there is no valid work to serve there, so the caller must
+// not wait for work it will never see go out.
+bool update_stratum_job(T_DATUM_TEMPLATE_DATA *block_template, bool new_block, int job_state);
+// coinbase_index is 0..MAX_COINBASE_TYPES-1, or 255 for the subsidy-only
+// coinbase used for empty new-block work.
+bool stratum_job_compute_header_v2(const T_DATUM_STRATUM_JOB *s, int coinbase_index, unsigned char pot_byte, unsigned char merkle_root[32], unsigned char h2[32]);
 void stratum_job_merkle_root_calc(T_DATUM_STRATUM_JOB *s, unsigned char *coinbase_txn_hash, unsigned char *merkle_root_output);
 int assembleBlockAndSubmit(uint8_t *block_header, uint8_t *coinbase_txn, size_t coinbase_txn_size, T_DATUM_STRATUM_JOB *job, T_DATUM_STRATUM_THREADPOOL_DATA *sdata, const char *block_hash_hex, bool empty_work);
 void generate_coinbase_txns_for_stratum_job(T_DATUM_STRATUM_JOB *s, bool empty_only);

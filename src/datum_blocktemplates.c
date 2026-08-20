@@ -123,6 +123,7 @@ int datum_template_init(void) {
 
 void datum_template_clear(T_DATUM_TEMPLATE_DATA* p) {
 	p->coinbasevalue = 0;
+	p->txn_total_fee = 0;
 	p->txn_count = 0;
 	p->txn_total_size = 0;
 	p->txn_data_offset = 0;
@@ -148,6 +149,73 @@ T_DATUM_TEMPLATE_DATA *get_next_template_ptr(void) {
 	return p;
 }
 
+// Check the two BLAKE2b consensus settings against the node that will validate
+// the block.
+//
+// getblocktemplate's coinbaseaux carries the headline the node will enforce
+// (rpc/mining.cpp), and only in the template for the activation height.
+// Nothing else exposes either value over RPC: DEPLOYMENT_BLAKE2B is a buried
+// deployment and getblockchaininfo and getdeploymentinfo do not list it. This
+// is therefore the only chance the Gateway gets to check its configuration
+// against the node, and it comes exactly at the height where being wrong costs
+// the one block that cannot be mined again.
+//
+// Returns false to refuse the template. Serving no work for that block is the
+// better failure: with the wrong headline the block is rejected as
+// bad-headline, and at the wrong height as bad-version-sha256d.
+//
+// The node's value is deliberately not adopted in place of the configured one.
+// A DATUM pool carries its own copy and checks the coinbase for it, so a
+// Gateway that quietly switched would have its shares rejected by the pool
+// instead of its block rejected by the network.
+static bool datum_gbt_check_blake2b_activation(json_t *gbt, uint64_t height) {
+	static uint64_t announced_height = UINT64_MAX;
+	const size_t headline_len = strlen(datum_config.blake2b_headline);
+	char node_headline[sizeof(datum_config.blake2b_headline)];
+	const char *hex;
+	size_t hex_len, i;
+	
+	hex = json_string_value(json_object_get(json_object_get(gbt, "coinbaseaux"), "blake2b_headline"));
+	
+	if (!hex) {
+		// Absent at every other height, so its absence only means anything when
+		// we have been told this is the activation height.
+		if (height == (uint64_t)datum_config.blake2b_activation_height) {
+			DLOG_FATAL("Node published no BLAKE2b headline for block %"PRIu64", which mining.blake2b_activation_height names as the activation height. Either the node activates at a different height, or it was not built from bitcoinknots/bitcoin#359. Serving no work for this block.", height);
+			return false;
+		}
+		return true;
+	}
+	
+	// Present, so this is the node's activation height whatever we were told.
+	if (height != (uint64_t)datum_config.blake2b_activation_height) {
+		DLOG_FATAL("Node says block %"PRIu64" activates BLAKE2b, but mining.blake2b_activation_height is %d. Serving no work for this block.", height, datum_config.blake2b_activation_height);
+		return false;
+	}
+	
+	hex_len = strlen(hex);
+	if ((hex_len & 1) || ((hex_len >> 1) >= sizeof(node_headline))) {
+		DLOG_FATAL("Node published a BLAKE2b headline of %zu hex characters, which this Gateway cannot build a coinbase from. Serving no work for this block.", hex_len);
+		return false;
+	}
+	for (i = 0; i < (hex_len >> 1); i++) {
+		node_headline[i] = (char)hex2bin_uchar(&hex[i << 1]);
+	}
+	node_headline[hex_len >> 1] = 0;
+	
+	if (((hex_len >> 1) != headline_len) || memcmp(node_headline, datum_config.blake2b_headline, headline_len)) {
+		DLOG_FATAL("BLAKE2b headline mismatch at the activation block: the node will enforce \"%s\", mining.blake2b_headline is \"%s\". A block carrying the wrong text is rejected as bad-headline, so no work is being served for this block.", node_headline, datum_config.blake2b_headline);
+		return false;
+	}
+	
+	// Once per height, not once per template poll.
+	if (announced_height != height) {
+		announced_height = height;
+		DLOG_INFO("Block %"PRIu64" activates BLAKE2b, and the configured headline is the one the node will enforce.", height);
+	}
+	return true;
+}
+
 T_DATUM_TEMPLATE_DATA *datum_gbt_parser(json_t *gbt) {
 	T_DATUM_TEMPLATE_DATA *tdata;
 	const char *s;
@@ -163,6 +231,10 @@ T_DATUM_TEMPLATE_DATA *datum_gbt_parser(json_t *gbt) {
 	tdata->height = json_integer_value(json_object_get(gbt, "height"));
 	if (!tdata->height) {
 		DLOG_ERROR("Missing data from GBT JSON (height)");
+		return NULL;
+	}
+	
+	if (!datum_gbt_check_blake2b_activation(gbt, tdata->height)) {
 		return NULL;
 	}
 	
@@ -268,12 +340,19 @@ T_DATUM_TEMPLATE_DATA *datum_gbt_parser(json_t *gbt) {
 	}
 	
 	tdata->txn_count = json_array_size(tx_array);
+	if (tdata->txn_count > 16383) {
+		// Truncating the list would leave the template inconsistent with
+		// itself: coinbasevalue covers the fees of every transaction the node
+		// selected, so a coinbase built for a shortened list claims more than
+		// the block it is in collects, and the node rejects it as
+		// bad-cb-amount. stratum_calculate_merkle_branches does not handle more
+		// than this either. Refuse the template and keep serving the previous
+		// one until the node offers one that fits.
+		DLOG_ERROR("DATUM Gateway does not support blocks with more than 16383 transactions! %d txns in template. Ignoring this template.", (int)tdata->txn_count);
+		return NULL;
+	}
 	tdata->txn_data_offset = sizeof(T_DATUM_TEMPLATE_TXN)*tdata->txn_count;
 	if (tdata->txn_count > 0) {
-		if (tdata->txn_count > 16383) {
-			DLOG_WARN("DATUM Gateway does not support blocks with more than 16383 transactions! %d txns in template. Truncating template to 16383 transactions.", (int)tdata->txn_count);
-			tdata->txn_count = 16383;
-		}
 		for(i=0;i<tdata->txn_count;i++) {
 			json_t *tx = json_array_get(tx_array, i);
 			if (!tx) {
@@ -309,7 +388,18 @@ T_DATUM_TEMPLATE_DATA *datum_gbt_parser(json_t *gbt) {
 			hex_to_bin_le(tdata->txns[i].hash_hex, tdata->txns[i].hash_bin);
 			
 			// fee
-			tdata->txns[i].fee_sats = json_integer_value(json_object_get(tx, "fee"));
+			//
+			// The subsidy paid by a coinbase that collects no fees is derived
+			// from coinbasevalue less this sum, so a fee that is absent or
+			// negative -- which GBT uses to mean "unknown" -- cannot be read as
+			// zero. Doing so would put more than the subsidy in that coinbase.
+			jval = json_object_get(tx, "fee");
+			if (!json_is_integer(jval) || json_integer_value(jval) < 0) {
+				DLOG_ERROR("Missing or unknown fee in GBT JSON transactions[%d]; the coinbase value cannot be derived without it",i);
+				return NULL;
+			}
+			tdata->txns[i].fee_sats = json_integer_value(jval);
+			tdata->txn_total_fee += tdata->txns[i].fee_sats;
 			
 			// sigops
 			tdata->txns[i].sigops = json_integer_value(json_object_get(tx, "sigops"));
@@ -473,7 +563,7 @@ void *datum_gateway_template_thread(void *args) {
 					const bool new_block = strcmp(t->previousblockhash, p1);
 					if (new_block || notify_othercause) {
 						notify_othercause = 0;
-						update_stratum_job(t,true,JOB_STATE_EMPTY_PLUS);
+						const bool empty_job_sent = update_stratum_job(t,true,JOB_STATE_EMPTY_PLUS);
 						if (new_block) {
 							last_block_change = current_time_millis();
 							strcpy(p1, t->previousblockhash);
@@ -483,23 +573,29 @@ void *datum_gateway_template_thread(void *args) {
 							DLOG_DEBUG("Urgent work update triggered");
 						}
 						
-						// sleep for a milisecond
-						// this will let other threads churn for a moment.  we wont get all the empty jobs blasted out in a milisecond anyway
-						usleep(1000);
-						
-						// wait for the empties to complete
-						DLOG_DEBUG("Waiting on empty work send completion...");
-						for(j=0;j<4000;j++) {
-							if (stratum_latest_empty_check_ready_for_full()) break;
-							usleep(1001);
+						// Below the BLAKE2b activation height no job was published, so
+						// there is no empty work in flight to wait on and no full job
+						// to follow it with. Waiting would burn four seconds per block
+						// on a completion signal that is never set.
+						if (empty_job_sent) {
+							// sleep for a milisecond
+							// this will let other threads churn for a moment.  we wont get all the empty jobs blasted out in a milisecond anyway
+							usleep(1000);
+							
+							// wait for the empties to complete
+							DLOG_DEBUG("Waiting on empty work send completion...");
+							for(j=0;j<4000;j++) {
+								if (stratum_latest_empty_check_ready_for_full()) break;
+								usleep(1001);
+							}
+							DLOG_DEBUG("Empty sends done!");
+							
+							// use this template to setup for a coinbaser wait job while the empty + full w/blank jobs are blasted
+							// then this job will get blasted when its ready.
+							i = datum_stratum_v1_global_subscriber_count();
+							DLOG_INFO("Updating priority stratum job for block %lu: %.8f BTC, %lu txns, %lu bytes (Sent to %llu stratum client%s)", (unsigned long)t->height, (double)t->coinbasevalue / (double)100000000.0, (unsigned long)t->txn_count, (unsigned long)t->txn_total_size, (unsigned long long)i, (i!=1)?"s":"");
+							update_stratum_job(t,false,JOB_STATE_FULL_PRIORITY_WAIT_COINBASER);
 						}
-						DLOG_DEBUG("Empty sends done!");
-						
-						// use this template to setup for a coinbaser wait job while the empty + full w/blank jobs are blasted
-						// then this job will get blasted when its ready.
-						i = datum_stratum_v1_global_subscriber_count();
-						DLOG_INFO("Updating priority stratum job for block %lu: %.8f BTC, %lu txns, %lu bytes (Sent to %llu stratum client%s)", (unsigned long)t->height, (double)t->coinbasevalue / (double)100000000.0, (unsigned long)t->txn_count, (unsigned long)t->txn_total_size, (unsigned long long)i, (i!=1)?"s":"");
-						update_stratum_job(t,false,JOB_STATE_FULL_PRIORITY_WAIT_COINBASER);
 					} else {
 						if (was_notified) {
 							// we got a notification of a new block, but there doesn't seem to actually be a new block.

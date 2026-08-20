@@ -117,7 +117,63 @@ void datum_utils_tests_secure_strequals(void) {
 	datum_test(datum_secure_strequals(NULL, 0, ""));
 }
 
+void datum_utils_tests_addr_2_output_script(void) {
+	unsigned char script[64];
+	int n;
+	
+	// mainnet P2WPKH
+	n = addr_2_output_script("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4", script, sizeof(script));
+	datum_test(n == 22);
+	datum_test(script[0] == 0x00 && script[1] == 0x14);
+	
+	// testnet P2WPKH, same witness program under a different HRP
+	n = addr_2_output_script("tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx", script, sizeof(script));
+	datum_test(n == 22);
+	
+	// regtest P2WPKH: the bcrt1 prefix also matches the "bc" test, so it has
+	// to be recognised before it, or it decodes under the wrong HRP
+	n = addr_2_output_script("bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080", script, sizeof(script));
+	datum_test(n == 22);
+	datum_test(script[0] == 0x00 && script[1] == 0x14);
+	
+	// mainnet P2TR (witness v1, bech32m)
+	n = addr_2_output_script("bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0", script, sizeof(script));
+	datum_test(n == 34);
+	datum_test(script[0] == 0x51 && script[1] == 0x20);
+	
+	// an address whose checksum is wrong yields nothing
+	datum_test(!addr_2_output_script("bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt081", script, sizeof(script)));
+	// and so does one that is too short to be an address at all
+	datum_test(!addr_2_output_script("bc1q", script, sizeof(script)));
+}
+
+void datum_utils_tests_get_target_from_diff(void) {
+	unsigned char t[32];
+	int j;
+	
+	// Difficulty 1 is 2^224: little-endian, that is a single 0x01 at byte 28.
+	get_target_from_diff(t, 1);
+	datum_test(t[28] == 0x01);
+	for (j = 0; j < 32; j++) if (j != 28) datum_test(t[j] == 0x00);
+	
+	// A power-of-two difficulty shifts it exactly, with no remainder: 2^224 /
+	// 2^8 is 2^216, a single 0x01 at byte 27.
+	get_target_from_diff(t, 256);
+	datum_test(t[27] == 0x01);
+	for (j = 0; j < 32; j++) if (j != 27) datum_test(t[j] == 0x00);
+	
+	get_target_from_diff(t, 16384); // 2^14 -> 2^210
+	datum_test(t[26] == 0x04);
+	for (j = 0; j < 32; j++) if (j != 26) datum_test(t[j] == 0x00);
+	
+	// bdiff would have put 0xFFFF at the top instead of a clean power of two.
+	get_target_from_diff(t, 1);
+	datum_test(!(t[26] == 0xFF && t[27] == 0xFF));
+}
+
 void datum_utils_tests(void) {
+	datum_utils_tests_get_target_from_diff();
 	datum_utils_tests_hex();
 	datum_utils_tests_secure_strequals();
+	datum_utils_tests_addr_2_output_script();
 }

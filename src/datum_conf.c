@@ -46,6 +46,7 @@
 #include <jansson.h>
 
 #include "datum_conf.h"
+#include "datum_protocol.h"
 #include "datum_jsonrpc.h"
 #include "datum_utils.h"
 #include "datum_sockets.h"
@@ -125,6 +126,12 @@ const T_DATUM_CONFIG_ITEM datum_config_options[] = {
 		.required = false, .ptr = datum_config.mining_coinbase_tag_secondary,			.default_string[0] = "DATUM User", .max_string_len = sizeof(datum_config.mining_coinbase_tag_secondary) },
 	{ .var_type = DATUM_CONF_INT, 		.category = "mining", 		.name = "coinbase_unique_id",		.description = "A unique ID between 1 and 65535. This is appended to the coinbase. Make unique per instance of datum with the same coinbase tags.",
 		.required = false, .ptr = &datum_config.coinbase_unique_id, 		.default_int = 4242 },
+	{ .var_type = DATUM_CONF_INT, 		.category = "mining", 		.name = "blake2b_activation_height",	.description = "Height at which the BLAKE2b proof-of-work hardfork activates. Required: this gateway mines no other proof of work and will not start until it is set to the activation height of the network being mined. It is a consensus value, not a preference; take it from the network, do not copy it from an example.",
+		.example = "0",
+		.required = false, .ptr = &datum_config.blake2b_activation_height, .default_int = 0 },
+	{ .var_type = DATUM_CONF_STRING, 	.category = "mining", 		.name = "blake2b_headline",		.description = "Consensus-critical headline text that must appear in the coinbase of the block at the activation height. Required, and exact: a block carrying the wrong text is rejected as bad-headline. Take it from the network, do not copy it from an example.",
+		.example = "\"\"",
+		.required = false, .ptr = datum_config.blake2b_headline, .default_string[0] = "", .max_string_len = sizeof(datum_config.blake2b_headline) },
 	{ .var_type = DATUM_CONF_STRING, 	.category = "mining", 		.name = "save_submitblocks_dir",	.description = "Directory to save all submitted blocks to as submitblock JSON files",
 		.required = false, .ptr = datum_config.mining_save_submitblocks_dir,			.default_string[0] = "", .max_string_len = sizeof(datum_config.mining_save_submitblocks_dir) },
 	
@@ -181,6 +188,8 @@ const T_DATUM_CONFIG_ITEM datum_config_options[] = {
 	{ .var_type = DATUM_CONF_BOOL, 		.category = "datum", 		.name = "pool_pass_workers",			.description = "Pass stratum miner usernames as sub-worker names to the pool (pool_username.miner's username)",
 		.example_default = true,
 		.required = false, .ptr = &datum_config.datum_pool_pass_workers, 		.default_bool = true },
+	{ .var_type = DATUM_CONF_INT, 		.category = "datum", 		.name = "protocol_job_slots",			.description = "How many jobs the DATUM server tracks. 256 is both the protocol maximum and what a header v2 server tracks; lower it only for a server that tracks fewer.",
+		.required = false, .ptr = &datum_config.datum_protocol_job_slots, 	.default_int = MAX_DATUM_PROTOCOL_JOBS },
 	{ .var_type = DATUM_CONF_BOOL, 		.category = "datum", 		.name = "pool_pass_full_users",			.description = "Pass stratum miner usernames as raw usernames to the pool (use if putting multiple payout addresses on miners behind this gateway)",
 		.example_default = true,
 		.required = false, .ptr = &datum_config.datum_pool_pass_full_users, 	.default_bool = true },
@@ -589,6 +598,29 @@ int datum_read_config(const char *conffile) {
 		return 0;
 	}
 	
+	if (datum_config.blake2b_activation_height <= 0) {
+		DLOG_FATAL("mining.blake2b_activation_height must be set. This gateway mines the BLAKE2b chain and nothing else, so without it there is no height at which it can produce valid work.");
+		return 0;
+	}
+	
+	if (!datum_config.blake2b_headline[0]) {
+		DLOG_FATAL("mining.blake2b_headline must be set. The block at the activation height is only valid if its coinbase carries it.");
+		return 0;
+	}
+
+	// Checked here rather than only where the coinbase is built: there the
+	// headline is too long to fit and there is nothing left to do but abort,
+	// at exactly the activation block and not one block sooner.
+	if (strlen(datum_config.blake2b_headline) > MAX_COINBASE_TAG_SPACE) {
+		DLOG_FATAL("mining.blake2b_headline is %zu bytes; only %d fit in the coinbase scriptSig. The activation block could not be mined with it.", strlen(datum_config.blake2b_headline), MAX_COINBASE_TAG_SPACE);
+		return 0;
+	}
+	
+	if ((datum_config.datum_protocol_job_slots < MIN_DATUM_PROTOCOL_JOB_SLOTS) || (datum_config.datum_protocol_job_slots > MAX_DATUM_PROTOCOL_JOBS)) {
+		DLOG_FATAL("datum.protocol_job_slots must be between %d and %d", MIN_DATUM_PROTOCOL_JOB_SLOTS, MAX_DATUM_PROTOCOL_JOBS);
+		return 0;
+	}
+	
 	if (datum_config.stratum_v1_max_clients > (datum_config.stratum_v1_max_clients_per_thread*datum_config.stratum_v1_max_threads)) {
 		DLOG_FATAL("Stratum server configuration error. Max clients too high for thread settings");
 		return 0;
@@ -602,6 +634,29 @@ int datum_read_config(const char *conffile) {
 	if (datum_config.stratum_v1_share_stale_seconds > 150) {
 		DLOG_FATAL("Stratum server stratum.share_stale_seconds must not exceed 150 (suggest 120)");
 		return 0;
+	}
+	
+	// The DATUM job ring has to outlast the window in which a share is still
+	// accepted. A slot is consumed per work update, so the ring covers roughly
+	// protocol_job_slots work updates, while a share stays acceptable for
+	// share_stale_seconds plus one work update. If the ring is the shorter of
+	// the two, work that passes the staleness check is dropped on the way to
+	// the pool because its slot has already been reused.
+	//
+	// The estimate is optimistic: a new block consumes two further slots, and
+	// how often that happens is a property of the network rather than of this
+	// configuration. So this rejects the configurations that cannot work, and
+	// does not certify the ones it accepts.
+	{
+		const int ring_seconds = datum_config.datum_protocol_job_slots * datum_config.bitcoind_work_update_seconds;
+		const int accepted_seconds = datum_config.stratum_v1_share_stale_seconds + datum_config.bitcoind_work_update_seconds;
+		if (ring_seconds < accepted_seconds) {
+			const int need = (accepted_seconds + datum_config.bitcoind_work_update_seconds - 1) / datum_config.bitcoind_work_update_seconds;
+			DLOG_FATAL("datum.protocol_job_slots is %d, which covers %d seconds of work at bitcoind.work_update_seconds=%d, but a share stays acceptable for %d seconds (stratum.share_stale_seconds=%d plus one work update). Shares this Gateway accepts would be dropped rather than sent to the pool. Raise datum.protocol_job_slots to at least %d.",
+				datum_config.datum_protocol_job_slots, ring_seconds, datum_config.bitcoind_work_update_seconds,
+				accepted_seconds, datum_config.stratum_v1_share_stale_seconds, need);
+			return 0;
+		}
 	}
 	
 	if (datum_config.datum_protocol_global_timeout < (datum_config.bitcoind_work_update_seconds+5)) {

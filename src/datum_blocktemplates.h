@@ -153,6 +153,7 @@ typedef struct {
 	uint16_t	local_index; // tie to stratum work
 	
 	uint64_t	coinbasevalue; //
+	uint64_t	txn_total_fee;     // sum of the template's transaction fees; coinbasevalue minus this is the subsidy
 	uint64_t	mintime; //
 	uint64_t	curtime; //
 	uint64_t	sizelimit; //

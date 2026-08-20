@@ -34,6 +34,7 @@
  */
 
 #include <assert.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "datum_jsonrpc.h"
@@ -178,6 +179,89 @@ void datum_stratum_mod_username_tests() {
 	datum_test(0 == strcmp(res, "def.ghi"));
 }
 
+void datum_stratum_request_id_tests(void) {
+	char buf[MAX_STRATUM_REQUEST_ID_CHARS + 1];
+	json_t *id;
+
+	// The type that arrives is the type that goes back. BLAKE2b miners send
+	// strings, and the quotes are part of the text so the reply is valid JSON
+	// whichever type it was.
+	id = json_integer(42);
+	datum_test(datum_stratum_request_id(id, buf, sizeof(buf)));
+	datum_test(0 == strcmp(buf, "42"));
+	json_decref(id);
+
+	id = json_string("abc");
+	datum_test(datum_stratum_request_id(id, buf, sizeof(buf)));
+	datum_test(0 == strcmp(buf, "\"abc\""));
+	json_decref(id);
+
+	id = json_null();
+	datum_test(datum_stratum_request_id(id, buf, sizeof(buf)));
+	datum_test(0 == strcmp(buf, "null"));
+	json_decref(id);
+
+	// The longest id that still fits: 62 characters plus two quotes.
+	char longest[MAX_STRATUM_REQUEST_ID_CHARS - 1];
+	memset(longest, 'a', sizeof(longest) - 1);
+	longest[sizeof(longest) - 1] = 0;
+	id = json_string(longest);
+	datum_test(datum_stratum_request_id(id, buf, sizeof(buf)));
+	datum_test(strlen(buf) == MAX_STRATUM_REQUEST_ID_CHARS);
+	json_decref(id);
+
+	// One character more is refused rather than truncated.
+	char over[MAX_STRATUM_REQUEST_ID_CHARS];
+	memset(over, 'a', sizeof(over) - 1);
+	over[sizeof(over) - 1] = 0;
+	id = json_string(over);
+	datum_test(!datum_stratum_request_id(id, buf, sizeof(buf)));
+	json_decref(id);
+
+	// Far over, which is the case that mattered: json_dumpb returns the length
+	// the encoding would need, so a test for zero alone would write a NUL past
+	// the end of buf at an offset the client picks.
+	char way_over[512];
+	memset(way_over, 'a', sizeof(way_over) - 1);
+	way_over[sizeof(way_over) - 1] = 0;
+	id = json_string(way_over);
+	datum_test(json_dumpb(id, buf, sizeof(buf) - 1, JSON_COMPACT | JSON_ENCODE_ANY) > sizeof(buf) - 1);
+	datum_test(!datum_stratum_request_id(id, buf, sizeof(buf)));
+	json_decref(id);
+
+	// A buffer with no room for even an empty encoding.
+	id = json_integer(1);
+	datum_test(!datum_stratum_request_id(id, buf, 1));
+	datum_test(!datum_stratum_request_id(NULL, buf, sizeof(buf)));
+	json_decref(id);
+}
+
+void datum_stratum_pot_byte_tests(void) {
+	// The byte the gateway commits when it builds work and the byte it commits
+	// when it rebuilds that work to check a share have to be the same one. A
+	// quickdiff job records its difficulty in quickdiff_value and deliberately
+	// leaves the job's own slot alone, so taking it from the slot yields a
+	// different coinbase, merkle root, h2 and hash1 than the miner was given,
+	// and every share on the job is rejected as high-hash.
+	T_DATUM_MINER_DATA * const m = calloc(1, sizeof(*m));
+	datum_test(m != NULL);
+	m->stratum_job_diffs[3] = 1024;   // 2^10
+	m->quickdiff_value = 65536;       // 2^16
+
+	datum_test(stratum_client_pot_byte(m, false, 3) == 10);
+	datum_test(stratum_client_pot_byte(m, true, 3) == 16);
+
+	// A quickdiff bump is at least four times the difficulty it replaces, so
+	// the two byte values never coincide and the mistake is never masked.
+	m->quickdiff_value = m->stratum_job_diffs[3] << 2;
+	datum_test(stratum_client_pot_byte(m, false, 3) == 10);
+	datum_test(stratum_client_pot_byte(m, true, 3) == 12);
+
+	free(m);
+}
+
 void datum_stratum_tests(void) {
 	datum_stratum_mod_username_tests();
+	datum_stratum_request_id_tests();
+	datum_stratum_pot_byte_tests();
 }

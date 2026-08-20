@@ -58,7 +58,35 @@ CURL *coinbaser_curl = NULL;
 
 const char *cbstart_hex = "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff"; // 82 len hex, 41 bytes
 
-#define MAX_COINBASE_TAG_SPACE 86 // leaves space for BIP34 height, extranonces, datum prime tag, etc.
+
+// Appends the coinbase unique ID push and reports where the proof-of-target
+// byte lands. Shared by the normal tagging path and the BLAKE2b activation
+// path, which replaces the tags but still needs this push: the server locates
+// the difficulty commitment by finding it.
+static int generate_coinbase_uid_tag(char *cb, int *ip, int cb_input_sz, bool datum_active, int *target_pot_index) {
+	int i = *ip;
+	
+	if ((datum_config.prime_id == 0) && (!datum_active)) {
+		uchar_to_hex(&cb[i], 0x03); i+=2; cb_input_sz++;
+		if (target_pot_index != NULL) *target_pot_index = cb_input_sz;
+		uchar_to_hex(&cb[i], 0xFF); i+=2; cb_input_sz++; // placeholder for PoT target
+		uchar_to_hex(&cb[i], (datum_config.coinbase_unique_id&0xFF)); i+=2; cb_input_sz++;
+		uchar_to_hex(&cb[i], ((datum_config.coinbase_unique_id>>8)&0xFF)); i+=2; cb_input_sz++;
+	} else {
+		uchar_to_hex(&cb[i], 0x07); i+=2; cb_input_sz++;
+		if (target_pot_index != NULL) *target_pot_index = cb_input_sz;
+		uchar_to_hex(&cb[i], 0xFF); i+=2; cb_input_sz++; // placeholder for PoT target
+		uchar_to_hex(&cb[i], (datum_config.coinbase_unique_id&0xFF)); i+=2; cb_input_sz++;
+		uchar_to_hex(&cb[i], ((datum_config.coinbase_unique_id>>8)&0xFF)); i+=2; cb_input_sz++;
+		uchar_to_hex(&cb[i], (datum_config.prime_id&0xFF)); i+=2; cb_input_sz++;
+		uchar_to_hex(&cb[i], ((datum_config.prime_id>>8)&0xFF)); i+=2; cb_input_sz++;
+		uchar_to_hex(&cb[i], ((datum_config.prime_id>>16)&0xFF)); i+=2; cb_input_sz++;
+		uchar_to_hex(&cb[i], ((datum_config.prime_id>>24)&0xFF)); i+=2; cb_input_sz++;
+	}
+	
+	*ip = i;
+	return cb_input_sz;
+}
 
 int generate_coinbase_input(int height, char *cb, int *target_pot_index) {
 	int cb_input_sz = 0;
@@ -72,6 +100,33 @@ int generate_coinbase_input(int height, char *cb, int *target_pot_index) {
 	cb_input_sz += i>>1;
 	
 	datum_active = datum_protocol_is_active();
+	
+	// The block that activates the BLAKE2b hardfork is only valid if its
+	// coinbase scriptSig contains the headline (validation.cpp, "bad-headline"),
+	// and the scriptSig is capped at 100 bytes, so at that one height the
+	// headline takes the tag space and the cosmetic tags are dropped. Mining
+	// that block without the headline produces a block the network rejects.
+	if (datum_config.blake2b_activation_height > 0
+		&& height == (uint64_t)datum_config.blake2b_activation_height
+		&& datum_config.blake2b_headline[0]) {
+		const int hl = (int)strlen(datum_config.blake2b_headline);
+		if (hl > MAX_COINBASE_TAG_SPACE) {
+			DLOG_FATAL("BLAKE2b headline is %d bytes; only %d fit in the coinbase. The activation block cannot be mined with this headline.", hl, MAX_COINBASE_TAG_SPACE);
+			panic_from_thread(__LINE__);
+			return 0;
+		}
+		DLOG_INFO("Height %d activates BLAKE2b: putting the headline in the coinbase instead of the tags", height);
+		if (hl <= 75) {
+			uchar_to_hex(&cb[i], (unsigned char)hl); i+=2; cb_input_sz++;
+		} else {
+			uchar_to_hex(&cb[i], 0x4C); i+=2; cb_input_sz++;
+			uchar_to_hex(&cb[i], (unsigned char)hl); i+=2; cb_input_sz++;
+		}
+		for (m = 0; m < hl; m++) {
+			uchar_to_hex(&cb[i], (unsigned char)datum_config.blake2b_headline[m]); i+=2; cb_input_sz++;
+		}
+		return generate_coinbase_uid_tag(cb, &i, cb_input_sz, datum_active, target_pot_index);
+	}
 	
 	// Handle coinbase tagging
 	// The first push after the height should be:
@@ -159,26 +214,7 @@ int generate_coinbase_input(int height, char *cb, int *target_pot_index) {
 		uchar_to_hex(&cb[i], 0x00); i+=2; cb_input_sz++;
 	}
 	
-	// append the coinbase unique ID tag
-	if ((datum_config.prime_id == 0) && (!datum_active)) {
-		uchar_to_hex(&cb[i], 0x03); i+=2; cb_input_sz++;
-		if (target_pot_index != NULL) *target_pot_index = cb_input_sz;
-		uchar_to_hex(&cb[i], 0xFF); i+=2; cb_input_sz++; // placehodler for PoT target
-		uchar_to_hex(&cb[i], (datum_config.coinbase_unique_id&0xFF)); i+=2; cb_input_sz++;
-		uchar_to_hex(&cb[i], ((datum_config.coinbase_unique_id>>8)&0xFF)); i+=2; cb_input_sz++;
-	} else {
-		uchar_to_hex(&cb[i], 0x07); i+=2; cb_input_sz++;
-		if (target_pot_index != NULL) *target_pot_index = cb_input_sz;
-		uchar_to_hex(&cb[i], 0xFF); i+=2; cb_input_sz++; // placeholder for PoT target
-		uchar_to_hex(&cb[i], (datum_config.coinbase_unique_id&0xFF)); i+=2; cb_input_sz++;
-		uchar_to_hex(&cb[i], ((datum_config.coinbase_unique_id>>8)&0xFF)); i+=2; cb_input_sz++;
-		uchar_to_hex(&cb[i], (datum_config.prime_id&0xFF)); i+=2; cb_input_sz++;
-		uchar_to_hex(&cb[i], ((datum_config.prime_id>>8)&0xFF)); i+=2; cb_input_sz++;
-		uchar_to_hex(&cb[i], ((datum_config.prime_id>>16)&0xFF)); i+=2; cb_input_sz++;
-		uchar_to_hex(&cb[i], ((datum_config.prime_id>>24)&0xFF)); i+=2; cb_input_sz++;
-	}
-	
-	return cb_input_sz;
+	return generate_coinbase_uid_tag(cb, &i, cb_input_sz, datum_active, target_pot_index);
 }
 
 void generate_coinbase_txns_for_stratum_job_subtypebysize(T_DATUM_STRATUM_JOB *s, int coinbase_index, int remaining_size, bool space_for_en_in_coinbase, int *cb1idx, int *cb2idx, bool special_coinb1) {
@@ -460,7 +496,7 @@ void generate_base_coinbase_txns_for_stratum_job(T_DATUM_STRATUM_JOB *s, bool ne
 	
 	if (new_block) {
 		// Append the subsidy-only payout to the subsidy_only_coinbase
-		sprintf(&s->subsidy_only_coinbase.coinb2[j], "%016llx", (unsigned long long)__builtin_bswap64(block_reward(s->height))); // subsidy calc for height
+		sprintf(&s->subsidy_only_coinbase.coinb2[j], "%016llx", (unsigned long long)__builtin_bswap64(s->block_template->coinbasevalue - s->block_template->txn_total_fee)); // subsidy: the template's value less the fees it counted
 		memcpy(&s->subsidy_only_coinbase.coinb2[j+16], &s->coinbase[0].coinb2[j+16], k-j-16);
 		sprintf(&s->subsidy_only_coinbase.coinb2[k], "00000000");
 	}
@@ -666,7 +702,7 @@ void generate_coinbase_txns_for_stratum_job(T_DATUM_STRATUM_JOB *s, bool empty_o
 	
 	if (empty_only) {
 		// Append the subsidy-only payout to the subsidy_only_coinbase
-		sprintf(&s->subsidy_only_coinbase.coinb2[j], "%016llx", (unsigned long long)__builtin_bswap64(block_reward(s->height))); // subsidy calc for height
+		sprintf(&s->subsidy_only_coinbase.coinb2[j], "%016llx", (unsigned long long)__builtin_bswap64(s->block_template->coinbasevalue - s->block_template->txn_total_fee)); // subsidy: the template's value less the fees it counted
 		memcpy(&s->subsidy_only_coinbase.coinb2[j+16], &s->coinbase[0].coinb2[j+16], k-j-16);
 		sprintf(&s->subsidy_only_coinbase.coinb2[k], "00000000");
 	}

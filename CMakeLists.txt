@@ -23,6 +23,8 @@ add_executable(datum_gateway
 	src/datum_conf.c
 	src/datum_conf_tests.c
 	src/datum_gateway.c
+	src/datum_header_v2.c
+	src/datum_header_v2_tests.c
 	src/datum_jsonrpc.c
 	src/datum_logger.c
 	src/datum_protocol.c

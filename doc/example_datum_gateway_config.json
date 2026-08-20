@@ -11,7 +11,9 @@
 	"mining": {
 		"pool_address": "put your own Bitcoin invoice address here",
 		"coinbase_tag_primary": "DATUM Gateway",
-		"coinbase_tag_secondary": "DATUM User"
+		"coinbase_tag_secondary": "DATUM User",
+		"blake2b_activation_height": 0,
+		"blake2b_headline": ""
 	},
 	"api": {
 		"admin_password": "",

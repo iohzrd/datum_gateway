@@ -130,6 +130,13 @@ typedef struct {
 	char mining_save_submitblocks_dir[256];
 	int coinbase_unique_id;
 	
+	// BLAKE2b hardfork (bitcoinknots/bitcoin PR #359)
+	// Registered as DATUM_CONF_INT, whose setter writes an int, so the field has
+	// to be one: a uint64_t here took a 4-byte write into an 8-byte field and
+	// turned a configured -1 into 4294967295, which then passed the <= 0 check.
+	int blake2b_activation_height;  // 0 disables; otherwise the first BLAKE2b height
+	char blake2b_headline[128];          // must appear in the activation block's coinbase
+	
 	char api_admin_password[72];
 	size_t api_admin_password_len;
 	char api_csrf_token[65];
@@ -155,6 +162,7 @@ typedef struct {
 	int datum_pool_port;
 	bool datum_pool_pass_workers;
 	bool datum_pool_pass_full_users;
+	int datum_protocol_job_slots;      // DATUM job ring size; 8 is what Ocean tracks
 	bool datum_always_pay_self;
 	bool datum_pooled_mining_only;
 	char datum_pool_pubkey[1024];

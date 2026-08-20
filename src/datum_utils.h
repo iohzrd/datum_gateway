@@ -57,9 +57,13 @@ uint64_t get_process_uptime_seconds(void);
 unsigned char hex2bin_uchar(const char *in);
 void build_hex_lookup(void);
 bool my_sha256(void *digest, const void *buffer, size_t length);
+// BLAKE2b with a 32-byte digest, unkeyed.
+void my_blake2b(void *digest, const void *buffer, size_t length);
+// Bitcoin's TaggedHash(tag): SHA256(SHA256(tag) || SHA256(tag) || data).
+// len must not exceed 128 bytes.
+void datum_tagged_sha256(const char *tag, const unsigned char *data, size_t len, unsigned char out[32]);
 void nbits_to_target(uint32_t nbits, uint8_t *target);
 int compare_hashes(const uint8_t *hash1, const uint8_t *hash2);
-unsigned long long block_reward(unsigned int block_height);
 int append_bitcoin_varint_hex(uint64_t n, char *s);
 int append_UNum_hex(uint64_t n, char *s);
 void panic_from_thread(int a);

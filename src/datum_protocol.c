@@ -134,7 +134,7 @@ unsigned char datum_protocol_setup_new_job_idx(void *sx) {
 	pthread_mutex_lock(&datum_protocol_next_job_idx_lock);
 	a = datum_protocol_next_job_idx;
 	datum_protocol_next_job_idx++;
-	if (datum_protocol_next_job_idx >= MAX_DATUM_PROTOCOL_JOBS) {
+	if (datum_protocol_next_job_idx >= datum_config.datum_protocol_job_slots) {
 		datum_protocol_next_job_idx = 0;
 	}
 	pthread_mutex_unlock(&datum_protocol_next_job_idx_lock);
@@ -468,7 +468,14 @@ int datum_protocol_job_validation_stxlist(unsigned char *data) {
 	
 	int i = 0, j;
 	
-	if (job_index >= 8) {
+	// Against the configured slot count rather than MAX_DATUM_PROTOCOL_JOBS.
+	// This is not a bounds check: job_index is an unsigned char and datum_jobs
+	// has 256 entries, so every value it can hold indexes the array safely, and
+	// comparing against MAX_DATUM_PROTOCOL_JOBS would never be true. What it
+	// rejects is a server naming a slot this Gateway does not hand out, which
+	// only happens when protocol_job_slots has been lowered below 256. The same
+	// check guards the 0x11 and 0x12 messages below.
+	if (job_index >= datum_config.datum_protocol_job_slots) {
 		// error response to 0x50 0x10
 		msg[i] = 0x50; i++;
 		msg[i] = 0x90; i++;
@@ -623,7 +630,7 @@ int datum_protocol_job_validation_stxlist_byid(unsigned char *data) {
 	
 	int i = 0, j,k=3;
 	
-	if (job_index >= 8) {
+	if (job_index >= datum_config.datum_protocol_job_slots) {
 		// error response to 0x50 0x11
 		msg[i] = 0x50; i++;
 		msg[i] = 0x91; i++;
@@ -766,7 +773,7 @@ int datum_protocol_job_validation_sblock(unsigned char *data) {
 	
 	int i = 0, j;
 	
-	if (job_index >= 8) {
+	if (job_index >= datum_config.datum_protocol_job_slots) {
 		// error response to 0x50 0x12
 		msg[i] = 0x50; i++;
 		msg[i] = 0x92; i++;
@@ -1283,14 +1290,55 @@ int datum_protocol_pow_submit(
 	const uint64_t target_diff,
 	const unsigned char *full_cb_tx,
 	const T_DATUM_STRATUM_COINBASE *cb,
-	unsigned char *extranonce,
 	unsigned char coinbase_index)
 {
 	// called by other threads to submit new POW
 	T_DATUM_PROTOCOL_POW pow;
 	
+	// The job ring is small, so a job old enough to have lost its slot cannot be
+	// described to the server at all: the slot now names a different job, and
+	// sending its prevhash, coinbase and merkle branches would attribute this
+	// share to work it was not mined on. Drop it instead, and say so.
+	pthread_rwlock_rdlock(&datum_jobs_rwlock);
+	const bool slot_is_ours = (datum_jobs[job->datum_job_idx].sjob == job);
+	pthread_rwlock_unlock(&datum_jobs_rwlock);
+	if (!slot_is_ours) {
+		DLOG_WARN("Share for job %s is older than the DATUM job ring (%d slots); it cannot be attributed and is not being sent. Raise datum.protocol_job_slots if this recurs.", job->job_id, datum_config.datum_protocol_job_slots);
+		return 0;
+	}
+	
 	pow.datum_job_id = job->datum_job_idx;
-	memcpy(pow.extranonce, extranonce, 12);
+	pow.sjob_expected = job;
+	// The extranonce is a header field, so it is read back out of the header
+	// rather than passed alongside it.
+	memcpy(pow.extranonce, &block_header[DATUM_HEADER_V2_EXTRANONCE_OFFSET], sizeof(pow.extranonce));
+	{
+		T_DATUM_HEADER_V2 hv2;
+		if (!datum_header_v2_deserialize(&hv2, block_header)) {
+			DLOG_ERROR("Share header is not a version 2 header; not sending it.");
+			return 0;
+		}
+		// The eight-byte stratum fields, unparsed, exactly as the hardware sent
+		// them. The server splices them back the same way this does.
+		// The protocol describes profile 0, the Sia layout, and nothing else. Work
+		// in another profile hashes differently, and a server told nothing about it
+		// would silently build the wrong header, so refuse it here instead.
+		if (datum_header_v2_asic_profile(&hv2) != 0) {
+			DLOG_ERROR("Share uses ASIC profile %d, which the DATUM protocol cannot describe; not sending it.", (int)datum_header_v2_asic_profile(&hv2));
+			return 0;
+		}
+		// The padding is what the server restores, so a header that has something
+		// there would lose it silently. It cannot happen with the extranonce this
+		// gateway builds, which is why this is a check and not a fix.
+		for (int pi = 0; pi < DATUM_HEADER_V2_EXTRANONCE_PAD; pi++) {
+			if (pow.extranonce[pi]) {
+				DLOG_ERROR("Share extranonce has a non-zero byte in the padding the protocol does not carry; not sending it.");
+				return 0;
+			}
+		}
+		datum_header_v2_to_sia_fields(&hv2, pow.sia_nonce, pow.sia_ntime);
+		pow.use_time_offset = (hv2.flags & DATUM_HEADER_FLAG_USE_TIME_OFFSET) != 0;
+	}
 	strncpy(pow.username, username, 383);
 	pow.username[383] = 0;
 	pow.coinbase_id = coinbase_index;
@@ -1299,6 +1347,9 @@ int datum_protocol_pow_submit(
 	pow.quickdiff = quickdiff;
 	pow.target_byte_index = job->target_pot_index; // just a sanity check on the server side. server hunts for this in the correct place anyway.
 	pow.target_byte = full_cb_tx[job->target_pot_index];
+	// The first 80 bytes of a version 2 header use the version 1 field offsets,
+	// so these three reads work for both. For version 2 they restate what still
+	// fits in 32 bits: nVersion with its marker, GetTimeOnWire() and nNonce.
 	pow.ntime = upk_u32le(block_header, 68);
 	pow.nonce = upk_u32le(block_header, 76);
 	pow.version = upk_u32le(block_header, 0);
@@ -1333,8 +1384,13 @@ int datum_protocol_pow(void *arg) {
 	pk_u32le(msg, i, pow->ntime); i += 4;  // ntime 4
 	pk_u32le(msg, i, pow->nonce); i += 4;  // nonce 8
 	pk_u32le(msg, i, pow->version); i += 4;  // version 12
-	msg[i] = 12; i++; // extranonce size... DO NOT CHANGE. Server support for other sizes is not likely any time soon.  But, planning ahead.  This should be plenty for everyone. :) 16
-	memcpy(&msg[i], pow->extranonce, 12); i+=12; // extranonce1+2 17
+	// Extranonce size, then the extranonce. A version 2 share's extranonce is a
+	// 16-byte header field, but its leading four bytes are padding in front of the
+	// session id and are always zero, so the same twelve travel as for a version 1
+	// share and the server puts the padding back.
+	msg[i] = DATUM_HEADER_V2_EXTRANONCE_WIRE; i++;
+	memcpy(&msg[i], &pow->extranonce[DATUM_HEADER_V2_EXTRANONCE_PAD], DATUM_HEADER_V2_EXTRANONCE_WIRE);
+	i += DATUM_HEADER_V2_EXTRANONCE_WIRE;
 	
 	char * const username = (char *)&msg[i];
 	if (((!datum_config.datum_pool_pass_full_users) && (!datum_config.datum_pool_pass_workers)) || pow->username[0] == '\0') {
@@ -1355,14 +1411,28 @@ int datum_protocol_pow(void *arg) {
 	if (j > DATUM_PROTOCOL_MAX_USERNAME_LEN) j = DATUM_PROTOCOL_MAX_USERNAME_LEN;
 	i += j + 1;  // including final null byte
 	
-	// reserve 4 bytes for future use
-	memset(&msg[i], 0, 4); i+=4;
+	// Four bytes the protocol reserves. Bit 0 of the first carries the header's
+	// time-offset selector, which the server needs and the 0x03 section does not
+	// hold: everything in that section is a field the hardware itself supplied.
+	memset(&msg[i], 0, 4);
+	if (pow->use_time_offset) {
+		msg[i] |= DATUM_POW_RESERVED_BLAKE2B_USE_TIME_OFFSET;
+	}
+	i += 4;
 	
 	pthread_rwlock_rdlock(&datum_jobs_rwlock);
 	
 	sjob = datum_jobs[pow->datum_job_id].sjob;
 	if (!sjob) {
 		pthread_rwlock_unlock(&datum_jobs_rwlock);
+		return 0;
+	}
+	if (pow->sjob_expected && sjob != pow->sjob_expected) {
+		// The slot was recycled after the share was queued, so it now describes
+		// a different job. Describing this share with it would attribute the
+		// work to a job it was not mined on.
+		pthread_rwlock_unlock(&datum_jobs_rwlock);
+		DLOG_WARN("Share's job lost its ring slot before it could be sent; dropping it rather than attributing it to the job that replaced it.");
 		return 0;
 	}
 	
@@ -1435,6 +1505,16 @@ int datum_protocol_pow(void *arg) {
 	}
 	
 	pthread_rwlock_unlock(&datum_jobs_rwlock);
+	
+	// 0x03: the BLAKE2b proof of work. Unlike the job and coinbase sections this
+	// is per-share data, so it is never cached. It carries only what the hardware
+	// controls; the server builds the header from this and the job it issued.
+	msg[i] = 0x03; i++;
+	msg[i] = 0x01; i++;  // algorithm: BLAKE2b
+	memcpy(&msg[i], pow->sia_ntime, 8); i += 8;
+	memcpy(&msg[i], pow->sia_nonce, 8); i += 8;
+	msg[i] = 0x04; i++;  // the job's block time, as the header serializes it
+	pk_u32le(msg, i, pow->ntime); i += 4;
 	
 	// cap message
 	msg[i] = 0xFE; i++;

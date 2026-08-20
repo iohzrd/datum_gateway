@@ -41,10 +41,29 @@
 #include <stdint.h>
 
 #include "datum_stratum.h"
+#include "datum_header_v2.h"
 
-// This is a protocol limit! server will truncate down to 8, unless a new spec is done that permits more.
-// Works out to over 5 minutes of jobs at 30-40 second work change intervals. No miner should be holding on to work this long.
-#define MAX_DATUM_PROTOCOL_JOBS 8
+// Job ids are a whole byte on the wire, so 256 is what the message format
+// allows, and it is also what a server speaking header v2 tracks. How many of
+// the slots this Gateway uses is datum.protocol_job_slots, which defaults to
+// all of them and exists to be lowered for a server that tracks fewer.
+//
+// Nothing negotiates this. The server's config message carries the payout
+// script, the prime id, the coinbase tag and the minimum difficulty, and no job
+// capacity, so both ends hold the number as a static assumption.
+//
+// The ring matters because a slot is reused after this many new jobs, and the
+// job it then describes is not the job an old share was mined on. A share for a
+// job that far back cannot be expressed in the protocol at all, so the client
+// drops it rather than reporting the wrong job -- see datum_protocol_pow_submit.
+// A block takes that path before the staleness check rather than after it, so a
+// ring shorter than the work a miner may still be holding costs the pool's
+// record of a block that was found, not only a share.
+#define MAX_DATUM_PROTOCOL_JOBS 256
+// Only a sanity bound. The requirement that matters is that the ring outlast
+// the window in which a share is still accepted, which datum_read_config checks
+// against the configured work update and staleness intervals.
+#define MIN_DATUM_PROTOCOL_JOB_SLOTS 1
 
 #define DATUM_PROTOCOL_VERSION "v0.4.1-beta" // this is sent to the server as a UA
 #define DATUM_PROTOCOL_CONNECT_TIMEOUT 30
@@ -102,7 +121,12 @@ typedef struct T_DATUM_PROTOCOL_JOB {
 
 typedef struct {
 	unsigned char datum_job_id;
-	unsigned char extranonce[12];
+	// The job this share was actually mined on. The ring slot named by
+	// datum_job_id can be recycled between the submitting thread checking it
+	// and the protocol thread reading it, so the reader compares this against
+	// the slot's current occupant under the same lock it reads it with.
+	const T_DATUM_STRATUM_JOB *sjob_expected;
+	unsigned char extranonce[DATUM_HEADER_V2_EXTRANONCE_SIZE];
 	char username[384];
 	unsigned char coinbase_id;
 	bool subsidy_only;
@@ -113,7 +137,21 @@ typedef struct {
 	uint32_t ntime;
 	uint32_t nonce;
 	uint32_t version;
+	// The three 32-bit fields above cannot hold a version 2 share's 64-bit
+	// nonce and time, so they only restate the parts that still fit. The whole
+	// of what the hardware controls travels in a 0x03 section: the raw eight-byte
+	// Sia fields as mining.submit sent them, the job's serialized block time, and
+	// the header flags. Everything else in the header is the pool's own job, so
+	// the pool builds the header rather than being handed one.
+	unsigned char sia_ntime[8];
+	unsigned char sia_nonce[8];
+	bool use_time_offset;
 } T_DATUM_PROTOCOL_POW;
+
+// Bit 0 of the first reserved byte of a submit-POW message: the header's
+// time-offset selector. The ASIC profile is not sent at all, because profile 0
+// is the only layout the protocol describes.
+#define DATUM_POW_RESERVED_BLAKE2B_USE_TIME_OFFSET 0x01
 
 int datum_protocol_init(void);
 int datum_encrypt_generate_keys(DATUM_ENC_KEYS *keys);
@@ -132,7 +170,6 @@ int datum_protocol_pow_submit(
 	const uint64_t target_diff,
 	const unsigned char *full_cb_tx,
 	const T_DATUM_STRATUM_COINBASE *cb,
-	unsigned char *extranonce,
 	unsigned char coinbase_index
 );
 

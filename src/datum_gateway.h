@@ -55,6 +55,12 @@
 
 #define MAX_COINBASE_TXN_SIZE_BYTES (((STRATUM_COINBASE1_MAX_LEN+STRATUM_COINBASE2_MAX_LEN)>>1)+64)
 
+// Bytes of coinbase scriptSig available for tags, and at the activation height
+// for the headline instead. Here rather than in datum_coinbaser.c so config
+// validation can reject a headline that will not fit, rather than leaving it to
+// fail while building the one block that must not fail.
+#define MAX_COINBASE_TAG_SPACE 86 // leaves space for BIP34 height, extranonces, datum prime tag, etc.
+
 #define STRATUM_JOB_INDEX_XOR ((uint16_t)0xC0DE)
 
 void datum_print_banner(void);

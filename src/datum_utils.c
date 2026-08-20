@@ -72,7 +72,15 @@ bool datum_test_fail_(const char *expr, const char *file, unsigned int line, con
 }
 
 void get_target_from_diff(unsigned char *result, uint64_t diff) {
-	uint64_t dividend_parts[4] = {0, 0, 0, 0x00000000FFFF0000};
+	// Difficulty 1 is 2^224 (pdiff), not 0xFFFF * 2^208 (bdiff).
+	//
+	// Two reasons this matters here. Share difficulties are powers of two --
+	// the proof-of-target byte is an exponent -- and 2^224 / 2^k is exactly
+	// 2^(224-k), so a target is a bit shift with no remainder and the pool and
+	// the gateway cannot disagree by a rounding step. And "the top 32 bits of
+	// the hash are zero" becomes exactly "meets difficulty 1", which is what
+	// the H-not-zero shortcut tests.
+	uint64_t dividend_parts[4] = {0, 0, 0, 0x0000000100000000};
 	uint64_t remainder = 0;
 	uint64_t quotient;
 	
@@ -206,6 +214,24 @@ bool double_sha256(void *out, const void *in, size_t length) {
 	return 1;
 }
 
+void my_blake2b(void *digest, const void *buffer, size_t length) {
+	// libsodium's generic hash is BLAKE2b; unkeyed with a 32-byte digest this
+	// is exactly the node's blake2b_nokey(out, 32, in, len).
+	crypto_generichash(digest, 32, buffer, length, NULL, 0);
+}
+
+void datum_tagged_sha256(const char *tag, const unsigned char *data, size_t len, unsigned char out[32]) {
+	unsigned char tag_hash[32];
+	unsigned char buf[64 + 128];
+
+	assert(len <= 128);
+	my_sha256(tag_hash, tag, strlen(tag));
+	memcpy(buf, tag_hash, 32);
+	memcpy(&buf[32], tag_hash, 32);
+	memcpy(&buf[64], data, len);
+	my_sha256(out, buf, 64 + len);
+}
+
 long double get_approx_achieved_diff(const unsigned char *bytes) {
 	if (bytes == NULL) {
 		// Handle null pointer
@@ -276,13 +302,6 @@ int compare_hashes(const uint8_t *share_hash, const uint8_t *target) {
 	return 0; // hashes are equal
 }
 
-unsigned long long block_reward(unsigned int block_height) {
-	unsigned long long reward = 5000000000;
-	unsigned int halvings = block_height / 210000;
-	if (halvings >= 64) return 0;
-	reward >>= halvings;
-	return reward;
-}
 
 int get_bitcoin_varint_len_bytes(uint64_t n) {
 	if (n < 0xFD) {
@@ -409,9 +428,13 @@ int addr_2_output_script(const char *addr, unsigned char *script, int max_len) {
 	if (al < 16) return 0;
 	
 	if (((addr[0] == 'b') && (addr[1] == 'c')) || ((addr[0] == 't') && (addr[1] == 'b'))) {
-		// bitcoin mainnet and testnet BIP 0173
+		// bitcoin mainnet, testnet/signet and regtest, BIP 0173 / BIP 0350
 		if (addr[0] == 't') {
 			hrp = "tb";
+		} else if (!strncmp(addr, "bcrt1", 5)) {
+			// Checked before the plain "bc" case, which this prefix also
+			// matches: decoding a bcrt1 address under the bc HRP fails.
+			hrp = "bcrt";
 		}
 		i = segwit_addr_decode(&witver, witprog, &witprog_len, hrp, addr);
 		if (!i) {
@@ -640,6 +663,11 @@ long double calc_network_difficulty(const char *bits_hex) {
 	tpower_val = (unsigned char)strtoul(tpower, &ep, 16);
 	tvalue_val = strtoul(tvalue, &ep, 16);
 	s = (signed short)29 - (signed short)tpower_val;
+	// 65535 (bdiff), deliberately unlike get_target_from_diff, which divides
+	// 2^224 (pdiff). These are different quantities: a share target has to agree
+	// with the pool that credits it, while this is the network difficulty shown
+	// on the dashboard, where the thing it is checked against is the node's own
+	// getdifficulty. Using pdiff here made the two disagree by 65536/65535.
 	d = powl(10.0,(double)s*(long double)2.4082399653118495617099111577959 + log10(65535.0 / (double)tvalue_val));
 	return d;
 }
