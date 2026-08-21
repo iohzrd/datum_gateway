@@ -153,7 +153,9 @@ static void datum_header_v2_commitment_fields(int32_t version, const unsigned ch
 	// cannot be broken by a future change to any of these fields. The hardware
 	// does see the previous block hash, but only as the tagged hash that
 	// datum_header_v2_prevblock_hidden derives, so h1 commits to it as well.
-	pk_u32le(buf, i, (uint32_t)version); i += 4;
+	// The node hashes the complete version with the v2 flag set (block.cpp
+	// GetHash: h1 << GetCompleteVersion()); version holds it flag-stripped.
+	pk_u32le(buf, i, DATUM_HEADER_V2_FLAG | ((uint32_t)version & ~DATUM_HEADER_V2_FLAG)); i += 4;
 	for (j = 0; j < 32; j++) buf[i + j] = prev_block[31 - j];
 	i += 32;
 	pk_u32le(buf, i, (uint32_t)height); i += 4;

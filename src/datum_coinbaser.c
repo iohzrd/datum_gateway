@@ -95,8 +95,23 @@ int generate_coinbase_input(int height, char *cb, int *target_pot_index) {
 	int excess;
 	bool datum_active = false;
 	
-	// let's figure out our coinbase tags w/BIP34 height
-	i = append_UNum_hex(height, &cb[0]);
+	// let's figure out our coinbase tags w/BIP34 height.
+	// Match Bitcoin Core's CScript() << nHeight exactly: heights 1..16 serialize
+	// as a single OP_1..OP_16 opcode (0x50+n) and 0 as OP_0, not as a data push.
+	// The BIP34 check (ContextualCheckBlock, "bad-cb-height") compares the coinbase
+	// scriptSig against that serialization byte for byte, so a data push for a low
+	// height is rejected. append_UNum_hex covers heights >= 17, where Core also
+	// uses a data push. Only reachable below height 17, i.e. regtest from genesis;
+	// the mainnet fork height is well above the OP_N range.
+	if (height >= 1 && height <= 16) {
+		uchar_to_hex(&cb[0], (unsigned char)(0x50 + height));
+		i = 2;
+	} else if (height == 0) {
+		uchar_to_hex(&cb[0], 0x00);
+		i = 2;
+	} else {
+		i = append_UNum_hex(height, &cb[0]);
+	}
 	cb_input_sz += i>>1;
 	
 	datum_active = datum_protocol_is_active();
