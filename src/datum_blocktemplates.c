@@ -216,6 +216,50 @@ static bool datum_gbt_check_blake2b_activation(json_t *gbt, uint64_t height) {
 	return true;
 }
 
+// Check that the node's proof-of-work rule for this template agrees with
+// mining.blake2b_activation_height.
+//
+// rpc/mining.cpp puts "!blake2b" into rules for every template whose header
+// is version 2, and only those. This gateway serves version 2 work from the
+// configured activation height on, so the two must agree at every height. If
+// the configured height is too low, the blocks built in between would be
+// rejected as bad-version-sha256d; if too high, no work would be served for
+// blocks the node would accept. Neither case is reported by the headline
+// check, which only runs at the one height where the node publishes it.
+//
+// Returns false to refuse the template.
+bool datum_gbt_check_blake2b_rules(json_t *gbt, uint64_t height) {
+	static uint64_t reported_height = UINT64_MAX;
+	const bool expected = (height >= (uint64_t)datum_config.blake2b_activation_height);
+	bool node_v2 = false;
+	json_t *rules, *rule;
+	size_t i;
+	
+	rules = json_object_get(gbt, "rules");
+	if (json_is_array(rules)) {
+		json_array_foreach(rules, i, rule) {
+			const char *s = json_string_value(rule);
+			if (s && !strcmp(s, "!blake2b")) {
+				node_v2 = true;
+				break;
+			}
+		}
+	}
+	
+	if (node_v2 == expected) return true;
+	
+	// Once per height, not once per template poll.
+	if (reported_height != height) {
+		reported_height = height;
+		if (node_v2) {
+			DLOG_FATAL("Node requires the BLAKE2b (version 2) header for block %"PRIu64", but mining.blake2b_activation_height is %d, below which this Gateway serves no work. The configured height is too high. Serving no work for this block.", height, datum_config.blake2b_activation_height);
+		} else {
+			DLOG_FATAL("Node does not list the !blake2b rule for block %"PRIu64", but mining.blake2b_activation_height is %d, so this Gateway would build a version 2 header that the node rejects as bad-version-sha256d. Either the configured height is too low, or the node was not built from bitcoinknots/bitcoin#359. Serving no work for this block.", height, datum_config.blake2b_activation_height);
+		}
+	}
+	return false;
+}
+
 T_DATUM_TEMPLATE_DATA *datum_gbt_parser(json_t *gbt) {
 	T_DATUM_TEMPLATE_DATA *tdata;
 	const char *s;
@@ -235,6 +279,10 @@ T_DATUM_TEMPLATE_DATA *datum_gbt_parser(json_t *gbt) {
 	}
 	
 	if (!datum_gbt_check_blake2b_activation(gbt, tdata->height)) {
+		return NULL;
+	}
+	
+	if (!datum_gbt_check_blake2b_rules(gbt, tdata->height)) {
 		return NULL;
 	}
 	

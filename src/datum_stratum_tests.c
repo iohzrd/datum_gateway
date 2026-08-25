@@ -37,6 +37,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "datum_blocktemplates.h"
+#include "datum_conf.h"
 #include "datum_jsonrpc.h"
 #include "datum_stratum.h"
 #include "datum_utils.h"
@@ -260,8 +262,53 @@ void datum_stratum_pot_byte_tests(void) {
 	free(m);
 }
 
+static void datum_gbt_rules_tests(void) {
+	const int saved_height = datum_config.blake2b_activation_height;
+	json_error_t error;
+	json_t *gbt;
+	
+	datum_config.blake2b_activation_height = 100;
+	
+	// Below the activation height the node must not list !blake2b.
+	gbt = json_loads("{\"rules\":[\"segwit\"]}", 0, &error);
+	datum_test(gbt != NULL);
+	datum_test(datum_gbt_check_blake2b_rules(gbt, 99));
+	datum_test(!datum_gbt_check_blake2b_rules(gbt, 100));
+	datum_test(!datum_gbt_check_blake2b_rules(gbt, 101));
+	json_decref(gbt);
+	
+	// From the activation height on it must.
+	gbt = json_loads("{\"rules\":[\"segwit\",\"!blake2b\"]}", 0, &error);
+	datum_test(gbt != NULL);
+	datum_test(!datum_gbt_check_blake2b_rules(gbt, 99));
+	datum_test(datum_gbt_check_blake2b_rules(gbt, 100));
+	datum_test(datum_gbt_check_blake2b_rules(gbt, 101));
+	json_decref(gbt);
+	
+	// Only the required form "!blake2b" counts; the bare name is the client
+	// side capability, which the node never echoes.
+	gbt = json_loads("{\"rules\":[\"blake2b\"]}", 0, &error);
+	datum_test(gbt != NULL);
+	datum_test(!datum_gbt_check_blake2b_rules(gbt, 100));
+	json_decref(gbt);
+	
+	// A missing or malformed rules array is a version 1 template.
+	gbt = json_loads("{}", 0, &error);
+	datum_test(gbt != NULL);
+	datum_test(datum_gbt_check_blake2b_rules(gbt, 99));
+	datum_test(!datum_gbt_check_blake2b_rules(gbt, 100));
+	json_decref(gbt);
+	gbt = json_loads("{\"rules\":\"!blake2b\"}", 0, &error);
+	datum_test(gbt != NULL);
+	datum_test(!datum_gbt_check_blake2b_rules(gbt, 100));
+	json_decref(gbt);
+	
+	datum_config.blake2b_activation_height = saved_height;
+}
+
 void datum_stratum_tests(void) {
 	datum_stratum_mod_username_tests();
 	datum_stratum_request_id_tests();
 	datum_stratum_pot_byte_tests();
+	datum_gbt_rules_tests();
 }

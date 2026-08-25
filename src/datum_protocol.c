@@ -893,6 +893,23 @@ int datum_protocol_job_validation_cmd(int len, unsigned char *data) {
 	return 1;
 }
 
+// data[7] is the share difficulty as a power of two. Shifting it in int is
+// undefined behavior at 31 and wrong from 32 up, so widen to uint64_t and
+// saturate the running total instead of wrapping it.
+static void datum_protocol_add_share_diff(uint64_t *total, unsigned char pot) {
+	uint64_t add;
+	if (pot >= 64) {
+		*total = UINT64_MAX;
+		return;
+	}
+	add = 1ULL << pot;
+	if (*total > UINT64_MAX - add) {
+		*total = UINT64_MAX;
+	} else {
+		*total += add;
+	}
+}
+
 // TODO: Ensure all shares are responded to!  Currently this has no bearing on anything, just logging
 int datum_protocol_share_response(int len, unsigned char *data) {
 	if (len < 9) {
@@ -906,7 +923,7 @@ int datum_protocol_share_response(int len, unsigned char *data) {
 		
 		datum_rejected_share_count++;
 		if (data[7] != 0xFF) {
-			datum_rejected_share_diff += 1<<data[7];
+			datum_protocol_add_share_diff(&datum_rejected_share_diff, data[7]);
 		} else {
 			datum_rejected_share_diff += datum_config.override_vardiff_min;
 		}
@@ -924,7 +941,7 @@ int datum_protocol_share_response(int len, unsigned char *data) {
 	           data[7], (int)data[8]);
 	
 	datum_accepted_share_count++;
-	datum_accepted_share_diff += 1<<data[7];
+	datum_protocol_add_share_diff(&datum_accepted_share_diff, data[7]);
 	datum_last_accepted_share_tsms = datum_protocol_mainloop_tsms;
 	
 	return 1;

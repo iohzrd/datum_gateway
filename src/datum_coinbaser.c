@@ -368,14 +368,18 @@ int datum_stratum_coinbase_fit_to_template(int max_sz, int fixed_bytes, T_DATUM_
 	i = fixed_bytes + max_sz;
 	msz1 = max_sz+fixed_bytes;
 	
-	if ((i+s->block_template->txn_total_size+85+36) > s->block_template->sizelimit) {
-		j = s->block_template->sizelimit - (s->block_template->txn_total_size+85+36) - fixed_bytes;
+	// The reservations below were sized for the 80-byte version 1 header (85
+	// bytes of header+varint, weighted 4x as 340). Every block this gateway
+	// builds has a 164-byte version 2 header, so reserve 84 more bytes of size
+	// and 336 more weight.
+	if ((i+s->block_template->txn_total_size+85+84+36) > s->block_template->sizelimit) {
+		j = s->block_template->sizelimit - (s->block_template->txn_total_size+85+84+36) - fixed_bytes;
 		if (j < 0) return 0;
 		msz1 = j;
 	}
-	
-	if (((i<<2)+s->block_template->txn_total_weight+340+36) > s->block_template->weightlimit) {
-		j = ((s->block_template->weightlimit - (s->block_template->txn_total_weight+340+36))>>2) - fixed_bytes;
+
+	if (((i<<2)+s->block_template->txn_total_weight+340+336+36) > s->block_template->weightlimit) {
+		j = ((s->block_template->weightlimit - (s->block_template->txn_total_weight+340+336+36))>>2) - fixed_bytes;
 		if (j < 0) return 0;
 		msz1 = j;
 	}

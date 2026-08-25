@@ -122,8 +122,11 @@ void *datum_submitblock_thread(void *ptr) {
 			}
 		}
 		
-		// Reset the event flag
+		// Reset the event flag and release the caller's buffer, then wake any
+		// datum_submitblock_waitfree caller that is waiting to free it.
 		submit_block_triggered = 0;
+		submitblock_ptr = NULL;
+		pthread_cond_broadcast(&submitblock_cond);
 		
 		// Unlock the mutex after processing
 		pthread_mutex_unlock(&submitblock_mutex);
@@ -132,9 +135,16 @@ void *datum_submitblock_thread(void *ptr) {
 	return NULL;
 }
 
+// Block until the submitblock thread has finished with the buffer passed to
+// datum_submitblock_trigger. Acquiring the mutex alone is not sufficient: the
+// thread may not have woken yet, in which case the mutex is free while the
+// buffer is still queued, and freeing it then is a use after free inside the
+// thread.
 void datum_submitblock_waitfree(void) {
 	pthread_mutex_lock(&submitblock_mutex);
-	DLOG_DEBUG("DEBUG: Lock acquired.");
+	while (submit_block_triggered || submitblock_ptr != NULL) {
+		pthread_cond_wait(&submitblock_cond, &submitblock_mutex);
+	}
 	pthread_mutex_unlock(&submitblock_mutex);
 }
 

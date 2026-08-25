@@ -1120,15 +1120,36 @@ int client_mining_submit(T_DATUM_CLIENT_DATA *c, const char * const id, json_t *
 		T_DATUM_HEADER_V2 hv2;
 		int bi;
 		
-		if ((strlen(nonce_s) != 16) || (strlen(ntime_s) != 16)) {
+		const size_t nonce_hexlen = strlen(nonce_s);
+		const size_t ntime_hexlen = strlen(ntime_s);
+
+		// 16 hex characters are the eight raw header bytes of the field. Some
+		// firmware sends only a 4-byte value as 8 hex characters; that is a
+		// hex number, so it is parsed and stored little-endian in the low four
+		// bytes with the high four zero. A wrong reading of either form cannot
+		// admit a bad share: the header rebuilt from it hashes to a different
+		// value and the share is rejected below.
+		if (nonce_hexlen == 16) {
+			for (bi = 0; bi < 8; bi++) sia_nonce[bi] = hex2bin_uchar(&nonce_s[bi << 1]);
+		} else if (nonce_hexlen == 8) {
+			pk_u32le(sia_nonce, 0, (uint32_t)strtoul(nonce_s, NULL, 16));
+			memset(&sia_nonce[4], 0, 4);
+		} else {
 			send_unknown_work_error(c, id);
 			m->share_count_rejected++;
 			m->share_diff_rejected += job_diff;
 			return 0;
 		}
-		for (bi = 0; bi < 8; bi++) {
-			sia_nonce[bi] = hex2bin_uchar(&nonce_s[bi << 1]);
-			sia_ntime[bi] = hex2bin_uchar(&ntime_s[bi << 1]);
+		if (ntime_hexlen == 16) {
+			for (bi = 0; bi < 8; bi++) sia_ntime[bi] = hex2bin_uchar(&ntime_s[bi << 1]);
+		} else if (ntime_hexlen == 8) {
+			pk_u32le(sia_ntime, 0, (uint32_t)strtoul(ntime_s, NULL, 16));
+			memset(&sia_ntime[4], 0, 4);
+		} else {
+			send_unknown_work_error(c, id);
+			m->share_count_rejected++;
+			m->share_diff_rejected += job_diff;
+			return 0;
 		}
 		if (!stratum_job_compute_header_v2(job, empty_work ? 255 : coinbase_index, full_cb_txn[job->target_pot_index], merkle_root, h2_unused)) {
 			send_unknown_work_error(c, id);
@@ -2294,8 +2315,7 @@ int assembleBlockAndSubmit(uint8_t *block_header, uint8_t *coinbase_txn, size_t 
 	
 	// cleanup
 	if (free_submitblock_req) {
-		// let's not free until our thread is done with it
-		usleep(10000);
+		// not freed until the submitblock thread has finished with it
 		datum_submitblock_waitfree();
 		free(submitblock_req);
 	}

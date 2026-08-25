@@ -259,8 +259,8 @@ T_DATUM_STRATUM_DUPE_ITEM *datum_stratum_add_new_dupe(T_DATUM_STRATUM_DUPES *dup
 	i->job_index = job_index;
 	i->ntime = ntime_val;
 	i->version_bits = version_bits;
-	i->extra_nonce_a = *((uint64_t *)&extranonce_bin[0]);
-	i->extra_nonce_b = *((uint32_t *)&extranonce_bin[8]);
+	i->extra_nonce_a = upk_u64le(extranonce_bin, 0);
+	i->extra_nonce_b = upk_u32le(extranonce_bin, 8);
 	if (!insert_after) {
 		// is a new entry
 		i->next = NULL;
@@ -332,9 +332,9 @@ bool datum_stratum_check_for_dupe(T_DATUM_STRATUM_THREADPOOL_DATA *t, unsigned i
 					// same ntime....!
 					if (version_bits == i->version_bits) {
 						// same version bits?!?!?!?
-						if (i->extra_nonce_a == *((uint64_t *)&extranonce_bin[0])) {
+						if (i->extra_nonce_a == upk_u64le(extranonce_bin, 0)) {
 							// same extra nonce 1?!?!?!??!
-							if (i->extra_nonce_b == *((uint32_t *)&extranonce_bin[8])) {
+							if (i->extra_nonce_b == upk_u32le(extranonce_bin, 8)) {
 								// ok, this is a duplicate :(
 								return true;
 							}
