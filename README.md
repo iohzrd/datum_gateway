@@ -51,6 +51,13 @@ Both are required and the Gateway will not start without them. They are properti
  - `blake2b_activation_height` is the first height at which a version 2 block is valid. Below it the Gateway serves no work at all and logs why, once per height: a version 2 block would be rejected there, and this build produces nothing else.
  - `blake2b_headline` must appear in the coinbase scriptSig of the block at the activation height, or the network rejects that block as `bad-headline`. The Gateway puts it there in place of the cosmetic coinbase tags, since a coinbase scriptSig holds at most 100 bytes. It is limited to 86 bytes and is checked at startup, because a headline that does not fit could otherwise only fail while building the one block that cannot be mined again later.
 
+### The reduced_data rule
+
+Knots activates the RDTS deployment (BIP 110) as a flag day at the same height as the BLAKE2b hardfork, and enforces its rules until the parent block's median time past reaches the deployment's expiry. The node reports `reduced_data` in the `rules` array of every template it enforces it on, and the Gateway takes that as the signal:
+
+ - The consensus block weight limit drops from 4,000,000 to 700,000. The node already reports the lower figure in the template's `weightlimit`, which is what the Gateway sizes the coinbase against, so this needs no configuration.
+ - Every output of the generation transaction is limited to a 34-byte scriptPubKey, or 83 bytes if it begins with `OP_RETURN`. A block carrying a larger one is rejected as `bad-txns-vout-script-toolarge`. An output script from `mining.pool_address` is at most 34 bytes and always fits. A payout script from a DATUM pool is not bounded by the protocol: the Gateway leaves an oversized miner payout output out of the coinbase, and refuses to serve work for the block if the pool's own payout script is oversized, since that output carries the rest of the generation value and cannot be left out.
+
 Consequences for mining hardware:
 
  - Hardware must speak the Siacoin dialect of Stratum v1. `mining.notify` sends `coinb1` as `000000` followed by the h2 commitment, an empty `coinb2`, an empty merkle branch list, an empty and unused version field, a tagged hash of the previous block hash with its first six bytes cleared in place of the previous block hash itself (what proof-of-work profile 0 hashes), and `ntime` as eight raw header bytes. `mining.submit` carries `ntime` and `nonce` as eight raw header bytes each, spliced into the header rather than parsed as numbers. A miner builds its merkle leaf as `BLAKE2b(0x00 || coinb1 || extranonce1 || extranonce2)`, which reproduces the hash1 of the pull request's construction exactly.

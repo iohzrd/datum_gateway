@@ -59,6 +59,14 @@
 
 #define MAX_BLOCK_SIZE_BYTES 4000000
 
+// RDTS (BIP 110) coinbase output script size limits, enforced by
+// Consensus::CheckOutputSizes on the generation transaction of every block from
+// the BLAKE2b activation height until the deployment's expiry. A coinbase
+// output whose scriptPubKey exceeds its limit makes the block invalid with
+// reject reason bad-txns-vout-script-toolarge.
+#define RDTS_MAX_OUTPUT_SCRIPT_SIZE 34
+#define RDTS_MAX_OUTPUT_DATA_SIZE 83
+
 // Assumption notes
 
 // max possible transactions = 16394-ish .. close enough to say 16384, since we're just not going to be idiots
@@ -163,7 +171,8 @@ typedef struct {
 	uint32_t	sigoplimit; //
 	
 	char		bits[9]; //
-	char		dummy[7]; // unused, possibly for alignment
+	bool		reduced_data; // node listed the "reduced_data" rule for this template
+	char		dummy[6]; // unused, possibly for alignment
 	uint8_t		bits_bin[4]; //
 	uint32_t	bits_uint; //
 	char		previousblockhash[72]; //
@@ -190,7 +199,9 @@ typedef struct {
 extern const char *datum_blocktemplates_error;
 
 int datum_template_init(void);
+bool datum_gbt_rule_present(json_t *gbt, const char *name);
 bool datum_gbt_check_blake2b_rules(json_t *gbt, uint64_t height);
+bool datum_rdts_output_script_ok(const unsigned char *script, int len);
 T_DATUM_TEMPLATE_DATA *datum_gbt_parser(json_t *gbt);
 void *datum_gateway_template_thread(void *args);
 void datum_blocktemplates_notifynew_sighandler();

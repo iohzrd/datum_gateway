@@ -408,6 +408,13 @@ err:
 	if (i >= len) goto err;
 	a = data[i]; i++;
 	if (i + a > len) goto err;
+	if (a > sizeof(((T_DATUM_STRATUM_JOB *)NULL)->pool_addr_script)) {
+		// Every stratum job copies this script into a fixed-size field, and it
+		// goes into the generation txn verbatim, so a longer one cannot be
+		// truncated to fit.
+		DLOG_ERROR("Pool payout script from server is %u bytes; only %zu bytes fit in a stratum job.", (unsigned)a, sizeof(((T_DATUM_STRATUM_JOB *)NULL)->pool_addr_script));
+		return 0;
+	}
 	memcpy(datum_config.override_mining_pool_scriptsig, &data[i], a); i+=a;
 	datum_config.override_mining_pool_scriptsig_len = a;
 	

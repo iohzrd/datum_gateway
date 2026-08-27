@@ -407,11 +407,15 @@ void generate_base_coinbase_txns_for_stratum_job(T_DATUM_STRATUM_JOB *s, bool ne
 	if (datum_protocol_is_active()) {
 		// DATUM
 		s->pool_addr_script_len = datum_config.override_mining_pool_scriptsig_len;
-		memcpy(&s->pool_addr_script[0], datum_config.override_mining_pool_scriptsig, datum_config.override_mining_pool_scriptsig_len);
+		if (s->pool_addr_script_len > (int)sizeof(s->pool_addr_script)) {
+			DLOG_FATAL("DATUM server sent a %d byte pool payout script; only %zu bytes fit in a stratum job.", s->pool_addr_script_len, sizeof(s->pool_addr_script));
+			panic_from_thread(__LINE__);
+		}
+		memcpy(&s->pool_addr_script[0], datum_config.override_mining_pool_scriptsig, s->pool_addr_script_len);
 		s->is_datum_job = true;
 	} else {
 		// No pool
-		s->pool_addr_script_len = addr_2_output_script(datum_config.mining_pool_address, &s->pool_addr_script[0], 64);
+		s->pool_addr_script_len = addr_2_output_script(datum_config.mining_pool_address, &s->pool_addr_script[0], sizeof(s->pool_addr_script));
 		s->is_datum_job = false;
 	}
 	if (!s->pool_addr_script_len) {
@@ -579,14 +583,18 @@ void generate_coinbase_txns_for_stratum_job(T_DATUM_STRATUM_JOB *s, bool empty_o
 	if (datum_protocol_is_active()) {
 		// DATUM
 		s->pool_addr_script_len = datum_config.override_mining_pool_scriptsig_len;
-		memcpy(&s->pool_addr_script[0], datum_config.override_mining_pool_scriptsig, datum_config.override_mining_pool_scriptsig_len);
+		if (s->pool_addr_script_len > (int)sizeof(s->pool_addr_script)) {
+			DLOG_FATAL("DATUM server sent a %d byte pool payout script; only %zu bytes fit in a stratum job.", s->pool_addr_script_len, sizeof(s->pool_addr_script));
+			panic_from_thread(__LINE__);
+		}
+		memcpy(&s->pool_addr_script[0], datum_config.override_mining_pool_scriptsig, s->pool_addr_script_len);
 		s->is_datum_job = true;
 		if (s->available_coinbase_outputs_count == 0) {
 			empty_only = true;
 		}
 	} else {
 		// No pool
-		s->pool_addr_script_len = addr_2_output_script(datum_config.mining_pool_address, &s->pool_addr_script[0], 64);
+		s->pool_addr_script_len = addr_2_output_script(datum_config.mining_pool_address, &s->pool_addr_script[0], sizeof(s->pool_addr_script));
 		s->is_datum_job = false;
 		empty_only = true;
 	}
@@ -853,10 +861,22 @@ int datum_coinbaser_v2_parse(T_DATUM_STRATUM_JOB *s, unsigned char *coinbaser, i
 			break;
 		}
 		slen = coinbaser[cidx]; cidx++;
-		if (slen < 2 || slen > 64 || cidx + slen > cblen) {
+		if (slen < 2 || slen > (int)sizeof(s->available_coinbase_outputs[0].output_script) || cidx + slen > cblen) {
 			DLOG_ERROR("Script length (%d) is invalid. Using default/empty", slen);
 			s->available_coinbase_outputs_count = 0;
 			return 0;
+		}
+		
+		// While the node enforces the reduced_data rule for this template, a
+		// coinbase output script over the RDTS limit makes the block invalid
+		// with reject reason bad-txns-vout-script-toolarge. Leave the output
+		// out; its value stays in the generation value and is paid to the pool
+		// payout script, the same as for an output that does not fit.
+		if (s->block_template && s->block_template->reduced_data &&
+		    !datum_rdts_output_script_ok(&coinbaser[cidx], slen)) {
+			DLOG_WARN("Coinbaser sent a %d byte output script, over the reduced_data limit for block %"PRIu32". Leaving that output out of the generation txn.", slen, s->block_template->height);
+			cidx += slen;
+			continue;
 		}
 		
 		tally += outval;

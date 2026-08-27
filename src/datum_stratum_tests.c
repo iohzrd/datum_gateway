@@ -306,9 +306,54 @@ static void datum_gbt_rules_tests(void) {
 	datum_config.blake2b_activation_height = saved_height;
 }
 
+static void datum_gbt_reduced_data_tests(void) {
+	json_error_t error;
+	json_t *gbt;
+	unsigned char script[128];
+	
+	// The reduced_data rule is reported unprefixed, alongside the others.
+	gbt = json_loads("{\"rules\":[\"segwit\",\"!blake2b\",\"reduced_data\"]}", 0, &error);
+	datum_test(gbt != NULL);
+	datum_test(datum_gbt_rule_present(gbt, "reduced_data"));
+	datum_test(datum_gbt_rule_present(gbt, "!blake2b"));
+	datum_test(!datum_gbt_rule_present(gbt, "blake2b"));
+	json_decref(gbt);
+	
+	gbt = json_loads("{\"rules\":[\"segwit\",\"!blake2b\"]}", 0, &error);
+	datum_test(gbt != NULL);
+	datum_test(!datum_gbt_rule_present(gbt, "reduced_data"));
+	json_decref(gbt);
+	
+	gbt = json_loads("{}", 0, &error);
+	datum_test(gbt != NULL);
+	datum_test(!datum_gbt_rule_present(gbt, "reduced_data"));
+	json_decref(gbt);
+	
+	// A non-OP_RETURN script is limited to 34 bytes: P2TR and P2WSH reach it
+	// exactly, and one byte more is over.
+	memset(script, 0x00, sizeof(script));
+	script[0] = 0x51; // OP_1 <32 byte program>
+	script[1] = 0x20;
+	datum_test(datum_rdts_output_script_ok(script, 34));
+	datum_test(!datum_rdts_output_script_ok(script, 35));
+	datum_test(!datum_rdts_output_script_ok(script, 64));
+	
+	// An OP_RETURN script is limited to 83 bytes. The witness commitment the
+	// node supplies is 38 bytes, and the extranonce output is 16.
+	script[0] = 0x6a;
+	datum_test(datum_rdts_output_script_ok(script, 16));
+	datum_test(datum_rdts_output_script_ok(script, 38));
+	datum_test(datum_rdts_output_script_ok(script, 83));
+	datum_test(!datum_rdts_output_script_ok(script, 84));
+	
+	// An empty script has no limit.
+	datum_test(datum_rdts_output_script_ok(script, 0));
+}
+
 void datum_stratum_tests(void) {
 	datum_stratum_mod_username_tests();
 	datum_stratum_request_id_tests();
 	datum_stratum_pot_byte_tests();
 	datum_gbt_rules_tests();
+	datum_gbt_reduced_data_tests();
 }

@@ -53,6 +53,7 @@
 #include "datum_blocktemplates.h"
 #include "datum_conf.h"
 #include "datum_stratum.h"
+#include "datum_protocol.h"
 
 volatile sig_atomic_t new_notify = 0;
 atomic_int new_notify_threadsafe = 0;
@@ -216,6 +217,72 @@ static bool datum_gbt_check_blake2b_activation(json_t *gbt, uint64_t height) {
 	return true;
 }
 
+// Whether the node listed the named rule for this template. GBT reports the
+// rules in force for the block the template builds, prefixing with "!" those a
+// client must understand to use the template.
+bool datum_gbt_rule_present(json_t *gbt, const char *name) {
+	json_t *rules, *rule;
+	size_t i;
+	
+	rules = json_object_get(gbt, "rules");
+	if (!json_is_array(rules)) return false;
+	
+	json_array_foreach(rules, i, rule) {
+		const char *s = json_string_value(rule);
+		if (s && !strcmp(s, name)) return true;
+	}
+	return false;
+}
+
+// Whether an output script the Gateway is about to put in the coinbase passes
+// the RDTS (BIP 110) size limit that Consensus::CheckOutputSizes applies to the
+// generation transaction while the deployment is active. An empty script is
+// unrestricted; an OP_RETURN script may reach RDTS_MAX_OUTPUT_DATA_SIZE bytes;
+// every other script is limited to RDTS_MAX_OUTPUT_SCRIPT_SIZE bytes.
+bool datum_rdts_output_script_ok(const unsigned char *script, int len) {
+	if (len <= 0) return true;
+	if (script[0] == 0x6a) return len <= RDTS_MAX_OUTPUT_DATA_SIZE;
+	return len <= RDTS_MAX_OUTPUT_SCRIPT_SIZE;
+}
+
+// Check the pool payout output script against the RDTS (BIP 110) size limit.
+//
+// This script carries whatever of the generation value is not paid to miners,
+// so unlike a miner payout output it cannot be left out of the coinbase. If it
+// is too large the block is rejected as bad-txns-vout-script-toolarge, so the
+// template is refused and no work is served for that block.
+//
+// The script comes either from mining.pool_address, where addr_2_output_script
+// produces at most 34 bytes and the limit is never reached, or from the DATUM
+// server's client configuration message, where it is arbitrary.
+//
+// Returns false to refuse the template.
+static bool datum_gbt_check_reduced_data_payout(uint64_t height) {
+	static uint64_t reported_height = UINT64_MAX;
+	unsigned char script[sizeof(((T_DATUM_STRATUM_JOB *)NULL)->pool_addr_script)] = { 0 };
+	int script_len;
+	
+	if (datum_protocol_is_active()) {
+		script_len = datum_config.override_mining_pool_scriptsig_len;
+		// A longer script is rejected by datum_protocol_client_conf, so this
+		// cannot be reached; report it as over the limit rather than reading
+		// past the end of the copy.
+		if (script_len > (int)sizeof(script)) script_len = sizeof(script) + 1;
+		else memcpy(script, datum_config.override_mining_pool_scriptsig, script_len);
+	} else {
+		script_len = addr_2_output_script(datum_config.mining_pool_address, script, sizeof(script));
+	}
+	
+	if (datum_rdts_output_script_ok(script, script_len)) return true;
+	
+	// Once per height, not once per template poll.
+	if (reported_height != height) {
+		reported_height = height;
+		DLOG_FATAL("Pool payout output script is %d bytes, but the node enforces the reduced_data rule for block %"PRIu64", which limits a non-OP_RETURN coinbase output script to %d bytes. A block carrying it is rejected as bad-txns-vout-script-toolarge, so no work is being served for this block.", script_len, height, RDTS_MAX_OUTPUT_SCRIPT_SIZE);
+	}
+	return false;
+}
+
 // Check that the node's proof-of-work rule for this template agrees with
 // mining.blake2b_activation_height.
 //
@@ -231,20 +298,7 @@ static bool datum_gbt_check_blake2b_activation(json_t *gbt, uint64_t height) {
 bool datum_gbt_check_blake2b_rules(json_t *gbt, uint64_t height) {
 	static uint64_t reported_height = UINT64_MAX;
 	const bool expected = (height >= (uint64_t)datum_config.blake2b_activation_height);
-	bool node_v2 = false;
-	json_t *rules, *rule;
-	size_t i;
-	
-	rules = json_object_get(gbt, "rules");
-	if (json_is_array(rules)) {
-		json_array_foreach(rules, i, rule) {
-			const char *s = json_string_value(rule);
-			if (s && !strcmp(s, "!blake2b")) {
-				node_v2 = true;
-				break;
-			}
-		}
-	}
+	const bool node_v2 = datum_gbt_rule_present(gbt, "!blake2b");
 	
 	if (node_v2 == expected) return true;
 	
@@ -283,6 +337,15 @@ T_DATUM_TEMPLATE_DATA *datum_gbt_parser(json_t *gbt) {
 	}
 	
 	if (!datum_gbt_check_blake2b_rules(gbt, tdata->height)) {
+		return NULL;
+	}
+	
+	// RDTS (BIP 110) reduces the block weight limit, which arrives in
+	// weightlimit below, and limits the size of every coinbase output script.
+	// The node lists the rule for exactly the blocks it enforces it on.
+	tdata->reduced_data = datum_gbt_rule_present(gbt, "reduced_data");
+	
+	if (tdata->reduced_data && !datum_gbt_check_reduced_data_payout(tdata->height)) {
 		return NULL;
 	}
 	
