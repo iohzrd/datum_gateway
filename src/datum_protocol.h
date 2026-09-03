@@ -65,11 +65,11 @@
 // against the configured work update and staleness intervals.
 #define MIN_DATUM_PROTOCOL_JOB_SLOTS 1
 
-#define DATUM_PROTOCOL_VERSION "v0.4.1-beta" // this is sent to the server as a UA
+#define DATUM_PROTOCOL_VERSION "v0.4.2-beta" // this is sent to the server as a UA
 #define DATUM_PROTOCOL_CONNECT_TIMEOUT 30
 
 #define DATUM_PROTOCOL_MAX_CMD_DATA_SIZE 4194304 // 2^22 - protocol limit!
-#define DATUM_PROTOCOL_BUFFER_SIZE (DATUM_PROTOCOL_MAX_CMD_DATA_SIZE*3)
+#define DATUM_PROTOCOL_BUFFER_SIZE (DATUM_PROTOCOL_MAX_CMD_DATA_SIZE * 3)
 #define DATUM_PROTOCOL_MAX_USERNAME_LEN 384
 
 #define MAX_DATUM_CLIENT_EVENTS 32
@@ -79,47 +79,52 @@
 // It's likely possible to brute force the XOR key to break packets down into individual commands, but the contents and nature of the
 // cmd is still obfuscated and unrecoverable without the session keys.
 
-typedef struct __attribute__((packed)) T_DATUM_PROTOCOL_HEADER {
-	uint32_t cmd_len:22; // max cmd size is 2^22 (~4MB), which is roughly the max block size for a raw submission or a raw template validation
-	uint8_t reserved:2; // save for later use
-	bool is_signed:1;
-	bool is_encrypted_pubkey:1;
-	bool is_encrypted_channel:1;
-	uint8_t proto_cmd:5; // 32 protocol level commands
+typedef struct __attribute__((packed)) T_DATUM_PROTOCOL_HEADER
+{
+	uint32_t cmd_len : 22; // max cmd size is 2^22 (~4MB), which is roughly the max block size for a raw submission or a raw template validation
+	uint8_t reserved : 2;  // save for later use
+	bool is_signed : 1;
+	bool is_encrypted_pubkey : 1;
+	bool is_encrypted_channel : 1;
+	uint8_t proto_cmd : 5; // 32 protocol level commands
 } T_DATUM_PROTOCOL_HEADER;
 
-typedef struct {
+typedef struct
+{
 	bool is_remote;
-	
+
 	// ed25519 key pair (signing)
 	unsigned char pk_ed25519[crypto_sign_PUBLICKEYBYTES];
 	unsigned char sk_ed25519[crypto_sign_SECRETKEYBYTES];
-	
+
 	// x25519 key pair (encyption)
 	unsigned char pk_x25519[crypto_box_PUBLICKEYBYTES];
 	unsigned char sk_x25519[crypto_box_SECRETKEYBYTES];
 } DATUM_ENC_KEYS;
 
-typedef struct {
+typedef struct
+{
 	DATUM_ENC_KEYS *local;
 	DATUM_ENC_KEYS *remote;
 	unsigned char precomp_remote[crypto_box_BEFORENMBYTES];
 } DATUM_ENC_PRECOMP;
 
-typedef struct T_DATUM_PROTOCOL_JOB {
+typedef struct T_DATUM_PROTOCOL_JOB
+{
 	unsigned char datum_job_id;
 	T_DATUM_STRATUM_JOB *sjob;
-	
+
 	bool server_has_merkle_branches;
-	
+
 	bool server_has_coinbase[8];
 	bool server_has_coinbase_empty;
 	bool server_has_short_txnlist;
-	
+
 	bool server_has_validated_block;
 } T_DATUM_PROTOCOL_JOB;
 
-typedef struct {
+typedef struct
+{
 	unsigned char datum_job_id;
 	// The job this share was actually mined on. The ring slot named by
 	// datum_job_id can be recycled between the submitting thread checking it
@@ -170,8 +175,7 @@ int datum_protocol_pow_submit(
 	const uint64_t target_diff,
 	const unsigned char *full_cb_tx,
 	const T_DATUM_STRATUM_COINBASE *cb,
-	unsigned char coinbase_index
-);
+	unsigned char coinbase_index);
 
 bool datum_protocol_thread_is_active(void);
 void datum_protocol_start_connector(void);
