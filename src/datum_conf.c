@@ -126,12 +126,6 @@ const T_DATUM_CONFIG_ITEM datum_config_options[] = {
 		.required = false, .ptr = datum_config.mining_coinbase_tag_secondary,			.default_string[0] = "DATUM User", .max_string_len = sizeof(datum_config.mining_coinbase_tag_secondary) },
 	{ .var_type = DATUM_CONF_INT, 		.category = "mining", 		.name = "coinbase_unique_id",		.description = "A unique ID between 1 and 65535. This is appended to the coinbase. Make unique per instance of datum with the same coinbase tags.",
 		.required = false, .ptr = &datum_config.coinbase_unique_id, 		.default_int = 4242 },
-	{ .var_type = DATUM_CONF_INT, 		.category = "mining", 		.name = "blake2b_activation_height",	.description = "Height at which the BLAKE2b proof-of-work hardfork activates. Required: this gateway mines no other proof of work and will not start until it is set to the activation height of the network being mined. It is a consensus value, not a preference; take it from the network, do not copy it from an example.",
-		.example = "0",
-		.required = false, .ptr = &datum_config.blake2b_activation_height, .default_int = 0 },
-	{ .var_type = DATUM_CONF_STRING, 	.category = "mining", 		.name = "blake2b_headline",		.description = "Consensus-critical headline text that must appear in the coinbase of the block at the activation height. Required, and exact: a block carrying the wrong text is rejected as bad-headline. Take it from the network, do not copy it from an example.",
-		.example = "\"\"",
-		.required = false, .ptr = datum_config.blake2b_headline, .default_string[0] = "", .max_string_len = sizeof(datum_config.blake2b_headline) },
 	{ .var_type = DATUM_CONF_STRING, 	.category = "mining", 		.name = "save_submitblocks_dir",	.description = "Directory to save all submitted blocks to as submitblock JSON files",
 		.required = false, .ptr = datum_config.mining_save_submitblocks_dir,			.default_string[0] = "", .max_string_len = sizeof(datum_config.mining_save_submitblocks_dir) },
 	
@@ -595,24 +589,6 @@ int datum_read_config(const char *conffile) {
 	
 	if (datum_config.stratum_v1_vardiff_min < 1) {
 		DLOG_FATAL("Stratum server stratum.vardiff_min must be at least 1 (suggest at least 1024, but more likely 32768)");
-		return 0;
-	}
-	
-	if (datum_config.blake2b_activation_height <= 0) {
-		DLOG_FATAL("mining.blake2b_activation_height must be set. This gateway mines the BLAKE2b chain and nothing else, so without it there is no height at which it can produce valid work.");
-		return 0;
-	}
-	
-	if (!datum_config.blake2b_headline[0]) {
-		DLOG_FATAL("mining.blake2b_headline must be set. The block at the activation height is only valid if its coinbase carries it.");
-		return 0;
-	}
-
-	// Checked here rather than only where the coinbase is built: there the
-	// headline is too long to fit and there is nothing left to do but abort,
-	// at exactly the activation block and not one block sooner.
-	if (strlen(datum_config.blake2b_headline) > MAX_COINBASE_TAG_SPACE) {
-		DLOG_FATAL("mining.blake2b_headline is %zu bytes; only %d fit in the coinbase scriptSig. The activation block could not be mined with it.", strlen(datum_config.blake2b_headline), MAX_COINBASE_TAG_SPACE);
 		return 0;
 	}
 	

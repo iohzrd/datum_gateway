@@ -178,7 +178,8 @@ typedef struct {
 	unsigned char datum_job_idx;
 	unsigned char datum_coinbaser_id;
 	
-	// BLAKE2b hardfork (PR #359). Every job uses the 164-byte version 2 header
+	// BLAKE2b hardfork (Bitcoin Knots v29.4.1.knots20260508). Every job uses the
+	// 164-byte version 2 header
 	// and the BLAKE2b proof of work; this gateway serves no SHA256d work.
 	uint16_t header_txcount;   // transactions in the block, including the coinbase
 	uint8_t header_flags;      // m_flags: ASIC profile in bits 0-1, time offset in bit 2

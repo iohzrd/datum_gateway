@@ -10,7 +10,7 @@ For miners wanting to pool rewards, it facilitates communication with a DATUM-su
 
 The work provided by the gateway to mining hardware is generated only from the local node generating templates for the miner. The real miner is always whoever is running the Bitcoin node. With DATUM, that's not the pool. As the protocol is intended solely for mining of decentralized block templates, the DATUM protocol has no mechanisms for the pool providing the information needed to construct work or a block template.
 
-This build mines the BLAKE2b proof of work introduced by [bitcoinknots/bitcoin#359](https://github.com/bitcoinknots/bitcoin/pull/359), and no other. It serves version 2 (164-byte) block headers over the Siacoin dialect of Stratum v1, so that Siacoin BLAKE2b mining hardware can mine the chain that pull request creates. SHA256d work is not served, and `mining.configure` reports `version-rolling` as false: in a version 2 header the block version is fixed by the template and committed in the h1 commitment, so there is nothing for hardware to roll. See [BLAKE2b Proof of Work](#blake2b-proof-of-work) below for the two settings this requires.
+This build mines the BLAKE2b proof of work introduced by [Bitcoin Knots v29.4.1.knots20260508](https://github.com/bitcoinknots/bitcoin/tree/v29.4.1.knots20260508), and no other. It serves version 2 (164-byte) block headers over the Siacoin dialect of Stratum v1, so that Siacoin BLAKE2b mining hardware can mine the chain that release creates. SHA256d work is not served, and `mining.configure` reports `version-rolling` as false: in a version 2 header the block version is fixed by the template and committed in the h1 commitment, so there is nothing for hardware to roll. See [BLAKE2b Proof of Work](#blake2b-proof-of-work) below for what this requires of the node and the hardware.
 
 Communication with the Bitcoin node is via RPC and must support GBT ("getblocktemplate").  Communication with the pool is via the DATUM protocol.
 
@@ -39,17 +39,10 @@ The protocol is not specific to a pooled reward system, as the Gateway coordinat
 
 ## BLAKE2b Proof of Work
 
-This build does not mine SHA256d. Every job it serves is a version 2 block header hashed with BLAKE2b, as specified by [bitcoinknots/bitcoin#359](https://github.com/bitcoinknots/bitcoin/pull/359), so it needs a node built from that pull request and two consensus values that have no defaults:
+This build does not mine SHA256d. Every job it serves is a version 2 block header hashed with BLAKE2b, as specified by [Bitcoin Knots v29.4.1.knots20260508](https://github.com/bitcoinknots/bitcoin/tree/v29.4.1.knots20260508), so it needs a node built from that tag or a later release. Nothing about the fork is configured in the Gateway: the node's template says which proof of work the block needs.
 
-    "mining": {
-        "blake2b_activation_height": <height at which the fork activates>,
-        "blake2b_headline": "<exact headline text>"
-    }
-
-Both are required and the Gateway will not start without them. They are properties of the network being mined, not preferences, so take them from that network rather than copying them from the example configuration file, whose values are placeholders.
-
- - `blake2b_activation_height` is the first height at which a version 2 block is valid. Below it the Gateway serves no work at all and logs why, once per height: a version 2 block would be rejected there, and this build produces nothing else.
- - `blake2b_headline` must appear in the coinbase scriptSig of the block at the activation height, or the network rejects that block as `bad-headline`. The Gateway puts it there in place of the cosmetic coinbase tags, since a coinbase scriptSig holds at most 100 bytes. It is limited to 86 bytes and is checked at startup, because a headline that does not fit could otherwise only fail while building the one block that cannot be mined again later.
+ - A template lists `!blake2b` in its `rules` from the activation height on. The Gateway serves version 2 work for exactly those templates and no work for any other, logging why once per height: a version 2 block below the activation height would be rejected as `bad-version-sha256d`, and this build produces nothing else.
+ - The block at the activation height is valid only if its coinbase scriptSig contains the headline (`bad-headline` otherwise). The node holds the headline as a consensus parameter and does not publish it over RPC, so the Gateway cannot place it. On mainnet the activation block, height 961640, has already been mined, so this no longer matters there. On regtest the node takes the headline from `-blake2b_headline`, and a Gateway mining that block must carry the same text in `mining.coinbase_tag_secondary`: the node checks for the headline as a substring of the scriptSig, and the tag is placed there as one contiguous run of bytes as long as the primary and secondary tags together fit in 84 bytes (the secondary tag is truncated first).
 
 ### The reduced_data rule
 
@@ -60,7 +53,7 @@ Knots activates the RDTS deployment (BIP 110) as a flag day at the same height a
 
 Consequences for mining hardware:
 
- - Hardware must speak the Siacoin dialect of Stratum v1. `mining.notify` sends `coinb1` as `000000` followed by the h2 commitment, an empty `coinb2`, an empty merkle branch list, an empty and unused version field, a tagged hash of the previous block hash with its first six bytes cleared in place of the previous block hash itself (what proof-of-work profile 0 hashes), and `ntime` as eight raw header bytes. `mining.submit` carries `ntime` and `nonce` as eight raw header bytes each, spliced into the header rather than parsed as numbers. A miner builds its merkle leaf as `BLAKE2b(0x00 || coinb1 || extranonce1 || extranonce2)`, which reproduces the hash1 of the pull request's construction exactly.
+ - Hardware must speak the Siacoin dialect of Stratum v1. `mining.notify` sends `coinb1` as `000000` followed by the h2 commitment, an empty `coinb2`, an empty merkle branch list, an empty and unused version field, a tagged hash of the previous block hash with its first six bytes cleared in place of the previous block hash itself (what proof-of-work profile 0 hashes), and `ntime` as eight raw header bytes. `mining.submit` carries `ntime` and `nonce` as eight raw header bytes each, spliced into the header rather than parsed as numbers. A miner builds its merkle leaf as `BLAKE2b(0x00 || coinb1 || extranonce1 || extranonce2)`, which reproduces the hash1 of the node's construction exactly.
  - `mining.subscribe` reports an 8-byte extranonce1 and an 8-byte extranonce2. In a version 2 header the extranonce is a header field rather than part of the coinbase.
  - Version rolling (aka "ASICBoost") is refused. A miner that asks for it is told `"version-rolling": false` and should submit five parameters to `mining.submit`, as the Siacoin dialect does.
  - The block time is fixed by the Gateway and committed in h1. The field hardware treats as its 64-bit timestamp is nonce space, so hardware that rolls a real timestamp there cannot push the block time forward.
@@ -69,7 +62,7 @@ Consequences for mining hardware:
 
  - 64-bit AMD or Intel system. Other systems may work, but at this time it is at your own risk.
  - Linux-based operating system. Other OSs will be supported in the future.
- - Bitcoin full node built from [bitcoinknots/bitcoin#359](https://github.com/bitcoinknots/bitcoin/pull/359), fully synced with the network being mined. This build serves only the BLAKE2b proof of work that pull request introduces, so a node without it will reject the blocks the Gateway submits.
+ - Bitcoin full node built from [Bitcoin Knots v29.4.1.knots20260508](https://github.com/bitcoinknots/bitcoin/tree/v29.4.1.knots20260508) or a later release, fully synced with the network being mined. This build serves only the BLAKE2b proof of work that release introduces, so a node without it will reject the blocks the Gateway submits.
  - Fast storage recommended for the Bitcoin node.
  - Stable internet connection for both the Bitcoin node and Gateway's communication with the pool.
  - CPU powerful enough to run the Bitcoin node without validation delays.
@@ -164,7 +157,7 @@ Compile DATUM by running:
 
 Run the datum_gateway executable with the -? flag for detailed configuration information, descriptions, and required options.  Then construct a configuration file (defaults to "datum_gateway_config.json" in the current working directory). Be sure to also set your coinbase tags.  The primary tag setting is unused in pooled mining, however the secondary tag is intended to show on things like block explorers when you mine a block.
 
-There is an [example configuration file included in the doc/ directory](doc/example_datum_gateway_config.json) you may wish to use as a template. Its `mining.blake2b_activation_height` and `mining.blake2b_headline` values are placeholders and will not start the Gateway; replace them with the real values for the network you are mining, as described under [BLAKE2b Proof of Work](#blake2b-proof-of-work).
+There is an [example configuration file included in the doc/ directory](doc/example_datum_gateway_config.json) you may wish to use as a template.
 Note that the API/web admin password is also used for preventing CSRF attacks, so it is crucial you set it to something reasonably secure (or disable the API/web interface entirely).
 
 You should review the [documentation on usernames](doc/usernames.md) next.

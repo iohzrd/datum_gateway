@@ -1753,8 +1753,9 @@ int client_mining_subscribe(T_DATUM_CLIENT_DATA *c, const char * const id, json_
 	// extranonce1 is the 4-byte session id left-padded to its share of that.
 	// client_mining_submit demands exactly the extranonce2_size reported here;
 	// both sides come from DATUM_HEADER_V2_EXTRANONCE1_SIZE.
-	// There is no other case: blake2b_activation_height is required to be set,
-	// so the 8-byte extranonce2 reply this used to have was unreachable.
+	// There is no other case: every template this gateway accepts is version 2
+	// (datum_gbt_rules_want_blake2b), so the 8-byte extranonce2 reply this used
+	// to have was unreachable.
 	snprintf(s, sizeof(s), "{\"error\":null,\"id\":%s,\"result\":[[[\"mining.notify\",\"%8.8x1\"],[\"mining.set_difficulty\",\"%8.8x2\"]],\"%0*d%8.8x\",%d]}\n",
 		id, sid, sid,
 		(DATUM_HEADER_V2_EXTRANONCE1_SIZE - 4) * 2, 0, sid,
@@ -2079,20 +2080,8 @@ bool update_stratum_job(T_DATUM_TEMPLATE_DATA *block_template, bool new_block, i
 	s->coinbase_value = block_template->coinbasevalue;
 	s->height = block_template->height;
 	
-	// This gateway mines the BLAKE2b chain and nothing else, so every job uses
-	// the version 2 header. Below the activation height such a block is
-	// invalid, and serving work for it would only produce shares the network
-	// throws away.
-	if (block_template->height < (uint64_t)datum_config.blake2b_activation_height) {
-		// Once per height, not once per template poll: below activation the
-		// polls continue for as long as it takes the chain to get there.
-		static uint64_t warned_height = UINT64_MAX;
-		if (warned_height != block_template->height) {
-			warned_height = block_template->height;
-			DLOG_WARN("Block %"PRIu64" is below the BLAKE2b activation height (%d); this gateway mines no other proof of work, so no work will be served until the chain reaches it.", (uint64_t)s->height, datum_config.blake2b_activation_height);
-		}
-		return false;
-	}
+	// Every template that reaches a job is version 2: datum_gbt_parser refuses
+	// one without the blake2b rule, so every job uses the version 2 header.
 	// The header commits to the transaction count including the coinbase.
 	s->header_txcount = (uint16_t)(block_template->txn_count + 1);
 	// ASIC profile 0, which is the Siacoin header layout.

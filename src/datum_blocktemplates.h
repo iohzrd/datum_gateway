@@ -200,7 +200,7 @@ extern const char *datum_blocktemplates_error;
 
 int datum_template_init(void);
 bool datum_gbt_rule_present(json_t *gbt, const char *name);
-bool datum_gbt_check_blake2b_rules(json_t *gbt, uint64_t height);
+bool datum_gbt_rules_want_blake2b(json_t *gbt);
 bool datum_rdts_output_script_ok(const unsigned char *script, int len);
 T_DATUM_TEMPLATE_DATA *datum_gbt_parser(json_t *gbt);
 void *datum_gateway_template_thread(void *args);

@@ -150,73 +150,6 @@ T_DATUM_TEMPLATE_DATA *get_next_template_ptr(void) {
 	return p;
 }
 
-// Check the two BLAKE2b consensus settings against the node that will validate
-// the block.
-//
-// getblocktemplate's coinbaseaux carries the headline the node will enforce
-// (rpc/mining.cpp), and only in the template for the activation height.
-// Nothing else exposes either value over RPC: DEPLOYMENT_BLAKE2B is a buried
-// deployment and getblockchaininfo and getdeploymentinfo do not list it. This
-// is therefore the only chance the Gateway gets to check its configuration
-// against the node, and it comes exactly at the height where being wrong costs
-// the one block that cannot be mined again.
-//
-// Returns false to refuse the template. Serving no work for that block is the
-// better failure: with the wrong headline the block is rejected as
-// bad-headline, and at the wrong height as bad-version-sha256d.
-//
-// The node's value is deliberately not adopted in place of the configured one.
-// A DATUM pool carries its own copy and checks the coinbase for it, so a
-// Gateway that quietly switched would have its shares rejected by the pool
-// instead of its block rejected by the network.
-static bool datum_gbt_check_blake2b_activation(json_t *gbt, uint64_t height) {
-	static uint64_t announced_height = UINT64_MAX;
-	const size_t headline_len = strlen(datum_config.blake2b_headline);
-	char node_headline[sizeof(datum_config.blake2b_headline)];
-	const char *hex;
-	size_t hex_len, i;
-	
-	hex = json_string_value(json_object_get(json_object_get(gbt, "coinbaseaux"), "blake2b_headline"));
-	
-	if (!hex) {
-		// Absent at every other height, so its absence only means anything when
-		// we have been told this is the activation height.
-		if (height == (uint64_t)datum_config.blake2b_activation_height) {
-			DLOG_FATAL("Node published no BLAKE2b headline for block %"PRIu64", which mining.blake2b_activation_height names as the activation height. Either the node activates at a different height, or it was not built from bitcoinknots/bitcoin#359. Serving no work for this block.", height);
-			return false;
-		}
-		return true;
-	}
-	
-	// Present, so this is the node's activation height whatever we were told.
-	if (height != (uint64_t)datum_config.blake2b_activation_height) {
-		DLOG_FATAL("Node says block %"PRIu64" activates BLAKE2b, but mining.blake2b_activation_height is %d. Serving no work for this block.", height, datum_config.blake2b_activation_height);
-		return false;
-	}
-	
-	hex_len = strlen(hex);
-	if ((hex_len & 1) || ((hex_len >> 1) >= sizeof(node_headline))) {
-		DLOG_FATAL("Node published a BLAKE2b headline of %zu hex characters, which this Gateway cannot build a coinbase from. Serving no work for this block.", hex_len);
-		return false;
-	}
-	for (i = 0; i < (hex_len >> 1); i++) {
-		node_headline[i] = (char)hex2bin_uchar(&hex[i << 1]);
-	}
-	node_headline[hex_len >> 1] = 0;
-	
-	if (((hex_len >> 1) != headline_len) || memcmp(node_headline, datum_config.blake2b_headline, headline_len)) {
-		DLOG_FATAL("BLAKE2b headline mismatch at the activation block: the node will enforce \"%s\", mining.blake2b_headline is \"%s\". A block carrying the wrong text is rejected as bad-headline, so no work is being served for this block.", node_headline, datum_config.blake2b_headline);
-		return false;
-	}
-	
-	// Once per height, not once per template poll.
-	if (announced_height != height) {
-		announced_height = height;
-		DLOG_INFO("Block %"PRIu64" activates BLAKE2b, and the configured headline is the one the node will enforce.", height);
-	}
-	return true;
-}
-
 // Whether the node listed the named rule for this template. GBT reports the
 // rules in force for the block the template builds, prefixing with "!" those a
 // client must understand to use the template.
@@ -283,33 +216,24 @@ static bool datum_gbt_check_reduced_data_payout(uint64_t height) {
 	return false;
 }
 
-// Check that the node's proof-of-work rule for this template agrees with
-// mining.blake2b_activation_height.
-//
-// rpc/mining.cpp puts "!blake2b" into rules for every template whose header
-// is version 2, and only those. This gateway serves version 2 work from the
-// configured activation height on, so the two must agree at every height. If
-// the configured height is too low, the blocks built in between would be
-// rejected as bad-version-sha256d; if too high, no work would be served for
-// blocks the node would accept. Neither case is reported by the headline
-// check, which only runs at the one height where the node publishes it.
-//
-// Returns false to refuse the template.
-bool datum_gbt_check_blake2b_rules(json_t *gbt, uint64_t height) {
-	static uint64_t reported_height = UINT64_MAX;
-	const bool expected = (height >= (uint64_t)datum_config.blake2b_activation_height);
-	const bool node_v2 = datum_gbt_rule_present(gbt, "!blake2b");
+// Whether the node listed the blake2b rule for this template, with or without
+// the "!" that marks a rule a client must understand to use the template.
+// The node (Bitcoin Knots v29.4.1.knots20260508, src/rpc/mining.cpp) lists
+// "!blake2b" for every template whose header is version 2, and only those;
+// this gateway serves no other work. Same function as in the CONVOY gateway
+// (datum_gbt_rules_want_blake2b in CONVOYMining/datum_gateway).
+bool datum_gbt_rules_want_blake2b(json_t *gbt) {
+	json_t *jval, *rule;
+	const char *s;
+	size_t ri;
 	
-	if (node_v2 == expected) return true;
-	
-	// Once per height, not once per template poll.
-	if (reported_height != height) {
-		reported_height = height;
-		if (node_v2) {
-			DLOG_FATAL("Node requires the BLAKE2b (version 2) header for block %"PRIu64", but mining.blake2b_activation_height is %d, below which this Gateway serves no work. The configured height is too high. Serving no work for this block.", height, datum_config.blake2b_activation_height);
-		} else {
-			DLOG_FATAL("Node does not list the !blake2b rule for block %"PRIu64", but mining.blake2b_activation_height is %d, so this Gateway would build a version 2 header that the node rejects as bad-version-sha256d. Either the configured height is too low, or the node was not built from bitcoinknots/bitcoin#359. Serving no work for this block.", height, datum_config.blake2b_activation_height);
-		}
+	if (!gbt) return false;
+	jval = json_object_get(gbt, "rules");
+	if (!json_is_array(jval)) return false;
+	json_array_foreach(jval, ri, rule) {
+		s = json_string_value(rule);
+		if (s && s[0] == '!') s++;
+		if (s && !strcmp(s, "blake2b")) return true;
 	}
 	return false;
 }
@@ -332,11 +256,16 @@ T_DATUM_TEMPLATE_DATA *datum_gbt_parser(json_t *gbt) {
 		return NULL;
 	}
 	
-	if (!datum_gbt_check_blake2b_activation(gbt, tdata->height)) {
-		return NULL;
-	}
-	
-	if (!datum_gbt_check_blake2b_rules(gbt, tdata->height)) {
+	// This gateway serves version 2 work and nothing else: a template without
+	// the blake2b rule is for a block the node rejects as bad-version-sha256d.
+	if (!datum_gbt_rules_want_blake2b(gbt)) {
+		// Once per height, not once per template poll: below the activation
+		// height the polls continue for as long as it takes the chain to get there.
+		static uint64_t reported_height = UINT64_MAX;
+		if (reported_height != tdata->height) {
+			reported_height = tdata->height;
+			DLOG_WARN("Node does not list the blake2b rule for block %"PRIu64"; this gateway serves version 2 work only, so no work will be served until the chain activates BLAKE2b.", (uint64_t)tdata->height);
+		}
 		return NULL;
 	}
 	

@@ -116,32 +116,16 @@ int generate_coinbase_input(int height, char *cb, int *target_pot_index) {
 	
 	datum_active = datum_protocol_is_active();
 	
-	// The block that activates the BLAKE2b hardfork is only valid if its
-	// coinbase scriptSig contains the headline (validation.cpp, "bad-headline"),
-	// and the scriptSig is capped at 100 bytes, so at that one height the
-	// headline takes the tag space and the cosmetic tags are dropped. Mining
-	// that block without the headline produces a block the network rejects.
-	if (datum_config.blake2b_activation_height > 0
-		&& height == (uint64_t)datum_config.blake2b_activation_height
-		&& datum_config.blake2b_headline[0]) {
-		const int hl = (int)strlen(datum_config.blake2b_headline);
-		if (hl > MAX_COINBASE_TAG_SPACE) {
-			DLOG_FATAL("BLAKE2b headline is %d bytes; only %d fit in the coinbase. The activation block cannot be mined with this headline.", hl, MAX_COINBASE_TAG_SPACE);
-			panic_from_thread(__LINE__);
-			return 0;
-		}
-		DLOG_INFO("Height %d activates BLAKE2b: putting the headline in the coinbase instead of the tags", height);
-		if (hl <= 75) {
-			uchar_to_hex(&cb[i], (unsigned char)hl); i+=2; cb_input_sz++;
-		} else {
-			uchar_to_hex(&cb[i], 0x4C); i+=2; cb_input_sz++;
-			uchar_to_hex(&cb[i], (unsigned char)hl); i+=2; cb_input_sz++;
-		}
-		for (m = 0; m < hl; m++) {
-			uchar_to_hex(&cb[i], (unsigned char)datum_config.blake2b_headline[m]); i+=2; cb_input_sz++;
-		}
-		return generate_coinbase_uid_tag(cb, &i, cb_input_sz, datum_active, target_pot_index);
-	}
+	// The block at the BLAKE2b activation height is valid only if its coinbase
+	// scriptSig contains the headline (validation.cpp, "bad-headline"). Nothing
+	// is placed for it here: the node (Bitcoin Knots v29.4.1.knots20260508)
+	// holds the headline as a consensus parameter (Blake2bHeadline in
+	// src/kernel/chainparams.cpp) and does not publish it over RPC, so this
+	// gateway has no source for it. On mainnet the activation block, height
+	// 961640, has already been mined. On regtest, where the node takes
+	// -blake2b_headline, the operator puts the same text in the secondary
+	// coinbase tag: the node checks for the headline as a substring of the
+	// scriptSig, and the tag is pushed below as one contiguous run of bytes.
 	
 	// Handle coinbase tagging
 	// The first push after the height should be:

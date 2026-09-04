@@ -4,7 +4,7 @@
  * Decentralized Alternative Templates for Universal Mining
  *
  * BLAKE2b proof-of-work block header (version 2), per
- * bitcoinknots/bitcoin PR #359, reproducing
+ * Bitcoin Knots v29.4.1.knots20260508, reproducing
  * CBlockHeader::GetHash() from src/primitives/block.cpp.
  *
  * Copyright (c) 2026 the DATUM Gateway contributors

@@ -4,7 +4,7 @@
  * Decentralized Alternative Templates for Universal Mining
  *
  * BLAKE2b proof-of-work block header (version 2), per
- * bitcoinknots/bitcoin PR #359.
+ * Bitcoin Knots v29.4.1.knots20260508.
  *
  * Copyright (c) 2026 the DATUM Gateway contributors
  *
@@ -220,8 +220,8 @@ void datum_header_v2_coinb1(const unsigned char h2[32], unsigned char out[DATUM_
 // block hash but datum_header_v2_prevblock_hidden of it, which is what profile
 // 0 hashes.
 //
-// PR #359 profile 0 places the header v2 grinding fields in exactly those
-// positions:
+// Profile 0 (Bitcoin Knots v29.4.1.knots20260508) places the header v2 grinding
+// fields in exactly those positions:
 //     nonce bytes  = nNonce (4, LE) || m_nonce2 (4, LE)
 //     ntime bytes  = m_time_offset (4, LE) || m_nonce3 (4, LE)
 // so hardware rolling its 64-bit nonce rolls nNonce and m_nonce2, and hardware

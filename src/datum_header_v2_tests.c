@@ -41,7 +41,7 @@
 #include "datum_header_v2.h"
 #include "datum_utils.h"
 
-// Test vectors from bitcoinknots/bitcoin PR #359, src/test/data/block_header_v2.json.
+// Test vectors from Bitcoin Knots v29.4.1.knots20260508, src/test/data/block_header_v2.json.
 // This file is generated from that JSON; do not edit it by hand.
 
 typedef struct {
@@ -366,7 +366,8 @@ void datum_header_v2_tests_sia_fields(void) {
 
 // The property the whole Siacoin-hardware plan rests on: a Sia-layout miner,
 // given coinb1 = 000000 || h2 and an empty coinb2, builds a merkle leaf that is
-// byte-identical to the hash1 of PR #359's construction. If this ever stops
+// byte-identical to the hash1 of the node's construction (Bitcoin Knots
+// v29.4.1.knots20260508, src/primitives/block.cpp). If this ever stops
 // holding, unmodified Siacoin ASICs can no longer mine this chain.
 void datum_header_v2_tests_sia_leaf(void) {
 	unsigned char coinb1[DATUM_HEADER_V2_COINB1_SIZE];

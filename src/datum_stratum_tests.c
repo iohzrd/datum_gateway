@@ -263,47 +263,37 @@ void datum_stratum_pot_byte_tests(void) {
 }
 
 static void datum_gbt_rules_tests(void) {
-	const int saved_height = datum_config.blake2b_activation_height;
 	json_error_t error;
 	json_t *gbt;
 	
-	datum_config.blake2b_activation_height = 100;
-	
-	// Below the activation height the node must not list !blake2b.
-	gbt = json_loads("{\"rules\":[\"segwit\"]}", 0, &error);
-	datum_test(gbt != NULL);
-	datum_test(datum_gbt_check_blake2b_rules(gbt, 99));
-	datum_test(!datum_gbt_check_blake2b_rules(gbt, 100));
-	datum_test(!datum_gbt_check_blake2b_rules(gbt, 101));
-	json_decref(gbt);
-	
-	// From the activation height on it must.
+	// The node lists "!blake2b" for every version 2 template; the bare name
+	// counts too, as it does for the CONVOY gateway.
 	gbt = json_loads("{\"rules\":[\"segwit\",\"!blake2b\"]}", 0, &error);
 	datum_test(gbt != NULL);
-	datum_test(!datum_gbt_check_blake2b_rules(gbt, 99));
-	datum_test(datum_gbt_check_blake2b_rules(gbt, 100));
-	datum_test(datum_gbt_check_blake2b_rules(gbt, 101));
+	datum_test(datum_gbt_rules_want_blake2b(gbt));
 	json_decref(gbt);
-	
-	// Only the required form "!blake2b" counts; the bare name is the client
-	// side capability, which the node never echoes.
 	gbt = json_loads("{\"rules\":[\"blake2b\"]}", 0, &error);
 	datum_test(gbt != NULL);
-	datum_test(!datum_gbt_check_blake2b_rules(gbt, 100));
+	datum_test(datum_gbt_rules_want_blake2b(gbt));
+	json_decref(gbt);
+	
+	// A template without the rule is a version 1 template, which this gateway
+	// serves no work for.
+	gbt = json_loads("{\"rules\":[\"segwit\"]}", 0, &error);
+	datum_test(gbt != NULL);
+	datum_test(!datum_gbt_rules_want_blake2b(gbt));
 	json_decref(gbt);
 	
 	// A missing or malformed rules array is a version 1 template.
 	gbt = json_loads("{}", 0, &error);
 	datum_test(gbt != NULL);
-	datum_test(datum_gbt_check_blake2b_rules(gbt, 99));
-	datum_test(!datum_gbt_check_blake2b_rules(gbt, 100));
+	datum_test(!datum_gbt_rules_want_blake2b(gbt));
 	json_decref(gbt);
 	gbt = json_loads("{\"rules\":\"!blake2b\"}", 0, &error);
 	datum_test(gbt != NULL);
-	datum_test(!datum_gbt_check_blake2b_rules(gbt, 100));
+	datum_test(!datum_gbt_rules_want_blake2b(gbt));
 	json_decref(gbt);
-	
-	datum_config.blake2b_activation_height = saved_height;
+	datum_test(!datum_gbt_rules_want_blake2b(NULL));
 }
 
 static void datum_gbt_reduced_data_tests(void) {
