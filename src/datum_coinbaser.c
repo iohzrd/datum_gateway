@@ -206,9 +206,21 @@ void generate_coinbase_txns_for_stratum_job_subtypebysize(T_DATUM_STRATUM_JOB *s
 	// technically an output script could be > 0x4B, meaning an extra byte would be eaten here... but that's not currently the standard
 	// this needs to match the loop lower in this function, as the count will get thrown off if it does not.
 	
-	// TODO: Enforce max sigops! Note: This is not currently enforced in eloipool, either, so punting for now and will monitor network stats to determine priority.
+	// The sigop cost available to these outputs: the template's sigoplimit
+	// (from GBT, in sigop cost units, where one legacy CHECKSIG counts 4) minus
+	// the cost of the template's transactions and minus the cost of the pool's
+	// own output. available_coinbase_outputs[].sigops is set by the coinbaser
+	// parser: 4 for a script whose first byte is OP_DUP (0x76, P2PKH) and 0
+	// for every other script. The pool output is charged the same way. An
+	// output whose cost exceeds the remaining budget is skipped, the same as an
+	// output that exceeds the remaining size, in both this counting pass and
+	// the writing pass below.
+	int64_t sigops_budget = (int64_t)s->block_template->sigoplimit - (int64_t)s->block_template->txn_total_sigops;
+	if ((s->pool_addr_script_len > 0) && (s->pool_addr_script[0] == 0x76)) sigops_budget -= 4;
+	if (sigops_budget < 0) sigops_budget = 0;
+	int64_t sigops_left = sigops_budget;
 	for(k=0;k<s->available_coinbase_outputs_count;k++) {
-		if (((s->available_coinbase_outputs[k].output_script_len+9) <= i) && ((mval + s->available_coinbase_outputs[k].value_sats) <= s->coinbase_value))  {
+		if (((s->available_coinbase_outputs[k].output_script_len+9) <= i) && ((mval + s->available_coinbase_outputs[k].value_sats) <= s->coinbase_value) && (s->available_coinbase_outputs[k].sigops <= sigops_left))  {
 			if ((special_coinb1) && (!c1full) && ((s->available_coinbase_outputs[k].output_script_len+9) <= i2)) {
 				i2 -= (s->available_coinbase_outputs[k].output_script_len+9);
 				c1cnt++;
@@ -217,6 +229,7 @@ void generate_coinbase_txns_for_stratum_job_subtypebysize(T_DATUM_STRATUM_JOB *s
 			}
 			
 			i -= (s->available_coinbase_outputs[k].output_script_len+9);
+			sigops_left -= s->available_coinbase_outputs[k].sigops;
 			m++;
 			mval += s->available_coinbase_outputs[k].value_sats;
 			if (i < 30) break;
@@ -244,9 +257,11 @@ void generate_coinbase_txns_for_stratum_job_subtypebysize(T_DATUM_STRATUM_JOB *s
 	
 	// append "m" payouts. find them the same way we did before
 	mval = 0;
+	sigops_left = sigops_budget;
 	for(k=0;k<s->available_coinbase_outputs_count;k++) {
-		if (((s->available_coinbase_outputs[k].output_script_len+9) <= j) && ((mval + s->available_coinbase_outputs[k].value_sats) <= s->coinbase_value)) {
+		if (((s->available_coinbase_outputs[k].output_script_len+9) <= j) && ((mval + s->available_coinbase_outputs[k].value_sats) <= s->coinbase_value) && (s->available_coinbase_outputs[k].sigops <= sigops_left)) {
 			j -= (s->available_coinbase_outputs[k].output_script_len+9);
+			sigops_left -= s->available_coinbase_outputs[k].sigops;
 			m--;
 			
 			mval += s->available_coinbase_outputs[k].value_sats;
