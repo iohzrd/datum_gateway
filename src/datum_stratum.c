@@ -1462,7 +1462,14 @@ unsigned int datum_stratum_coinbase_index(
 	if (new_block) return DATUM_COINBASE_ID_EMPTY;
 	if (!sdata || !sdata->cur_stratum_job ||
 	    sdata->cur_stratum_job->job_state < JOB_STATE_FULL_PRIORITY_WAIT_COINBASER ||
-	    !sdata->full_coinbase_ready) return 0;
+	    !sdata->full_coinbase_ready) {
+		// Class 0 pays only the pool, so pairing it with a full template loses the pooled
+		// split on any block found from it -- and stratum_job_coinbaser_ready publishes in
+		// exactly this state once its five-second timeout fires. Serve the subsidy-only job
+		// instead: it costs one template's fees while the coinbaser is late, against the
+		// whole block. Solo still wants class 0, which pays the configured address.
+		return datum_protocol_is_active() ? DATUM_COINBASE_ID_EMPTY : 0;
+	}
 	return COINBASE_TYPE_YUGE;
 }
 
