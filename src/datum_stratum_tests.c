@@ -99,8 +99,8 @@ static void datum_blake2b_client_pot_commitment_tests(void) {
 	memset(job.coinbase[0].coinb1_bin, 0x11, 20);
 	memset(job.coinbase[0].coinb2_bin, 0x22, 8);
 	job.coinbase[0].coinb1_bin[4] = 0xFF;
-	job.coinbase[2] = job.coinbase[0];
-	job.coinbase[2].coinb2_bin[0] ^= 0x55;
+	job.coinbase[1] = job.coinbase[0];
+	job.coinbase[1].coinb2_bin[0] ^= 0x55;
 	job.subsidy_only_coinbase = job.coinbase[0];
 	job.subsidy_only_coinbase.coinb2_bin[0] ^= 0xaa;
 	job.target_pot_index = 4;
@@ -110,7 +110,7 @@ static void datum_blake2b_client_pot_commitment_tests(void) {
 	datum_test(datum_stratum_job_blake2b_commitment(&job, &job.coinbase[0], false, 14, c_pot, pot));
 	datum_test(memcmp(c_ff, c_pot, 32) != 0);
 	datum_test(memcmp(ff, pot, 39) != 0);
-	datum_test(datum_stratum_job_blake2b_commitment(&job, &job.coinbase[2], false, 14, c_variant, NULL));
+	datum_test(datum_stratum_job_blake2b_commitment(&job, &job.coinbase[1], false, 14, c_variant, NULL));
 	datum_test(datum_stratum_job_blake2b_commitment(&job, &job.subsidy_only_coinbase, true, 14, c_subsidy, NULL));
 	datum_test(memcmp(c_variant, c_pot, 32) != 0);
 	datum_test(memcmp(c_subsidy, c_pot, 32) != 0);

@@ -184,23 +184,16 @@ int generate_coinbase_input(int height, char *cb, int *target_pot_index) {
 	return cb_input_sz;
 }
 
-void generate_coinbase_txns_for_stratum_job_subtypebysize(T_DATUM_STRATUM_JOB *s, int coinbase_index, int remaining_size, bool space_for_en_in_coinbase, int *cb1idx, int *cb2idx, bool special_coinb1) {
+void generate_coinbase_txns_for_stratum_job_subtypebysize(T_DATUM_STRATUM_JOB *s, int coinbase_index, int remaining_size, bool space_for_en_in_coinbase, int *cb1idx, int *cb2idx) {
 	// This function finishes off the stratum coinb1+coinb2 using the available outputs in the job and other flags specified.
 	// it does not attempt to maximize coinb1's size to any specific size
 	
-	int i, j, k, m, i2 = 0, c1cnt = 0;
+	int i, j, k, m;
 	uint64_t mval = 0;
-	bool c1full = false;
-	bool en_done = false;
 	// chicken and egg problem.  we need to know the output count before we can close off coinb1 if !space_for_en_in_coinbase
 	// either way, we want to start out coinb2 with outputs
 	i = remaining_size;
 	j = remaining_size;
-	if (special_coinb1) {
-		i2 = (300 - cb1idx[coinbase_index])>>1;
-		if (i2 < 0) i2 = 0;
-		space_for_en_in_coinbase = false;
-	}
 	m = 0;
 	mval = 0;
 	// technically an output script could be > 0x4B, meaning an extra byte would be eaten here... but that's not currently the standard
@@ -221,13 +214,6 @@ void generate_coinbase_txns_for_stratum_job_subtypebysize(T_DATUM_STRATUM_JOB *s
 	int64_t sigops_left = sigops_budget;
 	for(k=0;k<s->available_coinbase_outputs_count;k++) {
 		if (((s->available_coinbase_outputs[k].output_script_len+9) <= i) && ((mval + s->available_coinbase_outputs[k].value_sats) <= s->coinbase_value) && (s->available_coinbase_outputs[k].sigops <= sigops_left))  {
-			if ((special_coinb1) && (!c1full) && ((s->available_coinbase_outputs[k].output_script_len+9) <= i2)) {
-				i2 -= (s->available_coinbase_outputs[k].output_script_len+9);
-				c1cnt++;
-			} else {
-				c1full = true;
-			}
-			
 			i -= (s->available_coinbase_outputs[k].output_script_len+9);
 			sigops_left -= s->available_coinbase_outputs[k].sigops;
 			m++;
@@ -248,11 +234,8 @@ void generate_coinbase_txns_for_stratum_job_subtypebysize(T_DATUM_STRATUM_JOB *s
 		m+=3;
 		cb1idx[coinbase_index] += append_bitcoin_varint_hex(m, &s->coinbase[coinbase_index].coinb1[cb1idx[coinbase_index]]); // extranonce, us, witness commit, and "m" outputs
 		
-		if (!special_coinb1) {
-			// append extranonce op_return
-			cb1idx[coinbase_index] += sprintf(&s->coinbase[coinbase_index].coinb1[cb1idx[coinbase_index]], "0000000000000000106a0e%04" PRIx16, s->enprefix);
-			en_done = true;
-		}
+		// append extranonce op_return
+		cb1idx[coinbase_index] += sprintf(&s->coinbase[coinbase_index].coinb1[cb1idx[coinbase_index]], "0000000000000000106a0e%04" PRIx16, s->enprefix);
 	}
 	
 	// append "m" payouts. find them the same way we did before
@@ -266,28 +249,12 @@ void generate_coinbase_txns_for_stratum_job_subtypebysize(T_DATUM_STRATUM_JOB *s
 			
 			mval += s->available_coinbase_outputs[k].value_sats;
 			
-			if ((special_coinb1) && (k < c1cnt)) {
-				// put in coinb1
-				cb1idx[coinbase_index] += sprintf(&s->coinbase[coinbase_index].coinb1[cb1idx[coinbase_index]], "%016llx", (unsigned long long)__builtin_bswap64(s->available_coinbase_outputs[k].value_sats)); // TODO: Profile a faster way to do this
-				cb1idx[coinbase_index] += append_bitcoin_varint_hex(s->available_coinbase_outputs[k].output_script_len, &s->coinbase[coinbase_index].coinb1[cb1idx[coinbase_index]]); // Append script length
-				for(i=0;i<s->available_coinbase_outputs[k].output_script_len;i++) {
-					uchar_to_hex(&s->coinbase[coinbase_index].coinb1[cb1idx[coinbase_index]], s->available_coinbase_outputs[k].output_script[i]);
-					cb1idx[coinbase_index]+=2;
-				}
-			} else {
-				if ((special_coinb1) && (k == c1cnt)) {
-					// append extranonce op_return
-					cb1idx[coinbase_index] += sprintf(&s->coinbase[coinbase_index].coinb1[cb1idx[coinbase_index]], "0000000000000000106a0e%04" PRIx16, s->enprefix);
-					en_done = true;
-				}
-				
-				// put in coinb2
-				cb2idx[coinbase_index] += sprintf(&s->coinbase[coinbase_index].coinb2[cb2idx[coinbase_index]], "%016llx", (unsigned long long)__builtin_bswap64(s->available_coinbase_outputs[k].value_sats)); // TODO: Profile a faster way to do this
-				cb2idx[coinbase_index] += append_bitcoin_varint_hex(s->available_coinbase_outputs[k].output_script_len, &s->coinbase[coinbase_index].coinb2[cb2idx[coinbase_index]]); // Append script length
-				for(i=0;i<s->available_coinbase_outputs[k].output_script_len;i++) {
-					uchar_to_hex(&s->coinbase[coinbase_index].coinb2[cb2idx[coinbase_index]], s->available_coinbase_outputs[k].output_script[i]);
-					cb2idx[coinbase_index]+=2;
-				}
+			// put in coinb2
+			cb2idx[coinbase_index] += sprintf(&s->coinbase[coinbase_index].coinb2[cb2idx[coinbase_index]], "%016llx", (unsigned long long)__builtin_bswap64(s->available_coinbase_outputs[k].value_sats)); // TODO: Profile a faster way to do this
+			cb2idx[coinbase_index] += append_bitcoin_varint_hex(s->available_coinbase_outputs[k].output_script_len, &s->coinbase[coinbase_index].coinb2[cb2idx[coinbase_index]]); // Append script length
+			for(i=0;i<s->available_coinbase_outputs[k].output_script_len;i++) {
+				uchar_to_hex(&s->coinbase[coinbase_index].coinb2[cb2idx[coinbase_index]], s->available_coinbase_outputs[k].output_script[i]);
+				cb2idx[coinbase_index]+=2;
 			}
 			if (!m) break;
 			if (j < 30) break;
@@ -298,11 +265,6 @@ void generate_coinbase_txns_for_stratum_job_subtypebysize(T_DATUM_STRATUM_JOB *s
 	// this should never happen, but...
 	if (mval > s->coinbase_value) {
 		DLOG_ERROR("Attempting to pay more than we have available in the generation txn! --- %"PRIu64" sats available, %"PRIu64" sats to miners", s->coinbase_value, mval);
-	}
-	
-	if ((!space_for_en_in_coinbase) && (!en_done)) {
-		cb1idx[coinbase_index] += sprintf(&s->coinbase[coinbase_index].coinb1[cb1idx[coinbase_index]], "0000000000000000106a0e%04" PRIx16, s->enprefix);
-		en_done = true;
 	}
 	
 	if (s->coinbase_value > mval) {
@@ -526,8 +488,8 @@ void generate_coinbase_txns_for_stratum_job(T_DATUM_STRATUM_JOB *s, bool empty_o
 	// Account for available vsize, sigops, size, weight, etc
 	
 	// Note:
-	// With a minimum payout of 10 TBC, the largest likely coinbase as of height 840000 is around 16 KB if we paid every miner the minimum to a long address type.
-	// This seems highly unlikely.  16KB is more than sufficient.
+	// MAX_DICTATED_COINBASE_SIZE bounds the generation transaction; the
+	// template's room and MAX_COINBASER_OUTPUTS usually bound it first.
 	
 	int i, j, k;
 	char cb[300];
@@ -536,10 +498,10 @@ void generate_coinbase_txns_for_stratum_job(T_DATUM_STRATUM_JOB *s, bool empty_o
 	
 	bool space_for_en_in_coinbase = false;
 	
-	int cb1idx[MAX_COINBASE_TYPES] = { 0,0,0,0,0,0 };
-	int cb2idx[MAX_COINBASE_TYPES] = { 0,0,0,0,0,0 };
+	int cb1idx[MAX_COINBASE_TYPES] = { 0 };
+	int cb2idx[MAX_COINBASE_TYPES] = { 0 };
 	
-	int cb_req_sz[MAX_COINBASE_TYPES] = { 0,0,0,0,0 };
+	int cb_req_sz[MAX_COINBASE_TYPES] = { 0 };
 	
 	////////////////
 	
@@ -584,18 +546,14 @@ void generate_coinbase_txns_for_stratum_job(T_DATUM_STRATUM_JOB *s, bool empty_o
 		space_for_en_in_coinbase = true;
 	}
 	
-	// multiple coinbase options
-	// 0 = "empty" --- just pays pool addr, and possibly TIDES data.  extranonce in coinbase if fits, or in first output if not.
-	// 1 = "nicehash" --- roughly 500 bytes total... smaller than antminer... has nothing before the extranonce OP_RETURN (or no extranonce OP_RETURN if enough space in the coinbase)
-	// 2 = "antminer" --- roughly 730 bytes max size, using a larger coinb1 and UART sync bits.  This also works as a good default.
-	// 3 = "whatsminer" --- max 6500 bytes tested.  does not need the extranonce OP_RETURN unless there's no space in the coinbase itself after tags
-	// 4 = "huge" --- max 16kB --- this is probably the most we should reasonably attempt to do in the coinbase... something like 380 to 530 outputs, depending on the type of output
-	// 5 = "antminer2" --- max 2250 bytes --- latest S21s appear to support this
+	// two coinbase options
+	// 0 = COINBASE_TYPE_TINY --- just pays pool addr.  extranonce in coinbase if fits, or in first output if not.
+	// 1 = COINBASE_TYPE_YUGE --- carries the coinbaser's outputs, up to MAX_DICTATED_COINBASE_SIZE bytes
 	
-	// only type 2 *needs* the OP_RETURN extranonce, unless the coinbase itself is too long
+	// the OP_RETURN extranonce is needed only when the coinbase itself is too long
 	// set the len, and copy over the rest of the coinbase
 	for(i=0;i<MAX_COINBASE_TYPES;i++) {
-		if ((i!=2) && (space_for_en_in_coinbase)) {
+		if (space_for_en_in_coinbase) {
 			cb1idx[i] += append_bitcoin_varint_hex(cb_input_sz+15, &s->coinbase[i].coinb1[cb1idx[i]]);
 		} else {
 			cb1idx[i] += append_bitcoin_varint_hex(cb_input_sz, &s->coinbase[i].coinb1[cb1idx[i]]);
@@ -606,7 +564,7 @@ void generate_coinbase_txns_for_stratum_job(T_DATUM_STRATUM_JOB *s, bool empty_o
 		s->target_pot_index = target_pot_index + (cb1idx[i]>>1);
 		cb1idx[i] += cb_input_sz*2;
 		
-		if ((i!=2) && (space_for_en_in_coinbase)) {
+		if (space_for_en_in_coinbase) {
 			// if we are doing extranonce in the coinbase, then this is ALMOST the end of coinbase1
 			// we need a PUSH 14 and our enprefix in the coinbase
 			uchar_to_hex(&s->coinbase[i].coinb1[cb1idx[i]], 0x0E);
@@ -698,7 +656,7 @@ void generate_coinbase_txns_for_stratum_job(T_DATUM_STRATUM_JOB *s, bool empty_o
 	//////////////////////////////
 	
 	if (empty_only) {
-		// copy empty coinbaser to the others
+		// copy empty coinbaser to the other class
 		for (i=1;i<MAX_COINBASE_TYPES;i++) {
 			strcpy(s->coinbase[i].coinb1, s->coinbase[0].coinb1);
 			strcpy(s->coinbase[i].coinb2, s->coinbase[0].coinb2);
@@ -729,31 +687,13 @@ void generate_coinbase_txns_for_stratum_job(T_DATUM_STRATUM_JOB *s, bool empty_o
 		// weight units.
 		
 		if (!space_for_en_in_coinbase) {
-			cb_req_sz[1] = cb_req_sz[2] = cb_req_sz[3] = cb_req_sz[4] = cb_req_sz[5] = 124 + s->pool_addr_script_len + cb_input_sz + 10;
+			cb_req_sz[COINBASE_TYPE_YUGE] = 124 + s->pool_addr_script_len + cb_input_sz + 10;
 		} else {
-			cb_req_sz[1] = cb_req_sz[2] = cb_req_sz[3] = cb_req_sz[4] = cb_req_sz[5] = 124 + s->pool_addr_script_len + cb_input_sz;
-			cb_req_sz[2] += 10; // always OP_RETURN extranonce for type 2
+			cb_req_sz[COINBASE_TYPE_YUGE] = 124 + s->pool_addr_script_len + cb_input_sz;
 		}
 		
-		// TYPE 1 - "Nicehash" friendly, max 500 bytes
-		i = datum_stratum_coinbase_fit_to_template(500, cb_req_sz[1], s);
-		generate_coinbase_txns_for_stratum_job_subtypebysize(s, 1, i, space_for_en_in_coinbase, cb1idx, cb2idx, false);
-		
-		// TYPE 3 - "Whatsminer" friendly, max 6500 bytes
-		i = datum_stratum_coinbase_fit_to_template(6500, cb_req_sz[3], s);
-		generate_coinbase_txns_for_stratum_job_subtypebysize(s, 3, i, space_for_en_in_coinbase, cb1idx, cb2idx, false);
-		
-		// TYPE 4 - "YUGE", max 16KB
-		i = datum_stratum_coinbase_fit_to_template(16000, cb_req_sz[4], s);
-		generate_coinbase_txns_for_stratum_job_subtypebysize(s, 4, i, space_for_en_in_coinbase, cb1idx, cb2idx, false);
-		
-		// TYPE 5 - "Antminer 2", max 2250 bytes
-		i = datum_stratum_coinbase_fit_to_template(2250, cb_req_sz[5], s);
-		generate_coinbase_txns_for_stratum_job_subtypebysize(s, 5, i, space_for_en_in_coinbase, cb1idx, cb2idx, false);
-		
-		// TYPE 2 - Older Antminer stock (S19)
-		i = datum_stratum_coinbase_fit_to_template(755, cb_req_sz[2], s);
-		generate_coinbase_txns_for_stratum_job_subtypebysize(s, 2, i, false, cb1idx, cb2idx, true);
+		i = datum_stratum_coinbase_fit_to_template(MAX_DICTATED_COINBASE_SIZE, cb_req_sz[COINBASE_TYPE_YUGE], s);
+		generate_coinbase_txns_for_stratum_job_subtypebysize(s, COINBASE_TYPE_YUGE, i, space_for_en_in_coinbase, cb1idx, cb2idx);
 	}
 	
 	// prep binary versions of the coinbase for speeding up later
@@ -849,7 +789,7 @@ int datum_coinbaser_v2_parse(T_DATUM_STRATUM_JOB *s, unsigned char *coinbaser, i
 		
 		cbvalid++;
 		
-		if (cbvalid >= 512) break; // limitation of datum for now
+		if (cbvalid >= MAX_COINBASER_OUTPUTS) break; // the job's output list is this long
 	}
 	
 	s->datum_coinbaser_id = datum_id;

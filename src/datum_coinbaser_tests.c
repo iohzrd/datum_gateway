@@ -114,7 +114,7 @@ static const char *datum_coinbase_output_count_hex(T_DATUM_STRATUM_JOB *job, uin
 		job->pool_addr_script_len = sizeof(datum_test_p2wpkh_script);
 	}
 	memset(job->coinbase[1].coinb2, 0, sizeof(job->coinbase[1].coinb2));
-	generate_coinbase_txns_for_stratum_job_subtypebysize(job, 1, 1000, true, cb1idx, cb2idx, false);
+	generate_coinbase_txns_for_stratum_job_subtypebysize(job, 1, 1000, true, cb1idx, cb2idx);
 	return job->coinbase[1].coinb2 + 8;
 }
 
@@ -156,8 +156,49 @@ static void datum_blake2b_coinbase_sigops_tests(void) {
 	free(job);
 }
 
+/* A split of MAX_COINBASER_OUTPUTS P2WPKH outputs, 31 bytes each, fits one
+ * coinbase: the output count is written as a three-byte varint and the hex of
+ * coinb2 stays inside STRATUM_COINBASE2_MAX_LEN. */
+static void datum_blake2b_large_coinbase_tests(void) {
+	T_DATUM_TEMPLATE_DATA tdata;
+	T_DATUM_STRATUM_JOB *job = calloc(1, sizeof(*job));
+	int cb1idx[MAX_COINBASE_TYPES] = {0};
+	int cb2idx[MAX_COINBASE_TYPES] = {0};
+	size_t cb_bytes;
+	int k;
+	
+	datum_test(job != NULL);
+	if (!job) return;
+	memset(&tdata, 0, sizeof(tdata));
+	tdata.sigoplimit = 80000;
+	job->block_template = &tdata;
+	job->coinbase_value = 5000000000ULL;
+	memcpy(job->pool_addr_script, datum_test_p2wpkh_script, sizeof(datum_test_p2wpkh_script));
+	job->pool_addr_script_len = sizeof(datum_test_p2wpkh_script);
+	for (k = 0; k < MAX_COINBASER_OUTPUTS; k++) {
+		job->available_coinbase_outputs[k].value_sats = 1000;
+		memcpy(job->available_coinbase_outputs[k].output_script, datum_test_p2wpkh_script, sizeof(datum_test_p2wpkh_script));
+		job->available_coinbase_outputs[k].output_script_len = sizeof(datum_test_p2wpkh_script);
+		job->available_coinbase_outputs[k].sigops = 0;
+	}
+	job->available_coinbase_outputs_count = MAX_COINBASER_OUTPUTS;
+	
+	generate_coinbase_txns_for_stratum_job_subtypebysize(
+		job, COINBASE_TYPE_YUGE, MAX_COINBASER_OUTPUTS * 31, true, cb1idx, cb2idx);
+	
+	/* MAX_COINBASER_OUTPUTS dictated outputs, the pool output and the witness
+	 * commitment: 1026, written as fd followed by 0x0402 little-endian. */
+	datum_test(!strncmp(job->coinbase[COINBASE_TYPE_YUGE].coinb2 + 8, "fd0204", 6));
+	datum_test(strlen(job->coinbase[COINBASE_TYPE_YUGE].coinb2) < STRATUM_COINBASE2_MAX_LEN);
+	cb_bytes = (strlen(job->coinbase[COINBASE_TYPE_YUGE].coinb1) +
+		strlen(job->coinbase[COINBASE_TYPE_YUGE].coinb2)) / 2 + 12;
+	datum_test(cb_bytes > 30000 && cb_bytes <= MAX_DICTATED_COINBASE_SIZE);
+	free(job);
+}
+
 void datum_coinbaser_tests(void) {
 	datum_prime_id_64bit_tests();
 	datum_blake2b_coinbase_limit_tests();
 	datum_blake2b_coinbase_sigops_tests();
+	datum_blake2b_large_coinbase_tests();
 }

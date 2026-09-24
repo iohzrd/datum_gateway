@@ -822,9 +822,6 @@ void stratum_update_vardiff(T_DATUM_CLIENT_DATA *c, bool no_quick) {
 		if (delta_tsms > 60000) {
 			// 60s with no shares seems sufficient to bump diff down next round.
 			m->current_diff = m->current_diff >> 1;
-			if (m->current_diff < m->forced_high_min_diff) {
-				m->current_diff = m->forced_high_min_diff;
-			}
 			if (m->current_diff < datum_config.stratum_v1_vardiff_min) {
 				m->current_diff = datum_config.stratum_v1_vardiff_min;
 			}
@@ -873,9 +870,6 @@ void stratum_update_vardiff(T_DATUM_CLIENT_DATA *c, bool no_quick) {
 	if (ms_per_share > (target_ms_share*2)) {
 		// adjust diff downward a tick
 		m->current_diff = m->current_diff >> 1;
-		if (m->current_diff < m->forced_high_min_diff) {
-			m->current_diff = m->forced_high_min_diff;
-		}
 		if (m->current_diff < datum_config.stratum_v1_vardiff_min) {
 			m->current_diff = datum_config.stratum_v1_vardiff_min;
 		}
@@ -1624,25 +1618,6 @@ int send_mining_set_difficulty(T_DATUM_CLIENT_DATA *c) {
 	return 0;
 }
 
-void datum_stratum_fingerprint_by_UA(T_DATUM_MINER_DATA *m) {
-	// TODO: Make this a little more efficient. perhaps move to a loadable definitions file of some kind.
-	
-	// For SHA256d work this function also chose the coinbase class the miner's
-	// firmware was known to accept: COINBASE_TYPE_TINY for the Antminer A3, the
-	// 2250-byte class for the Antminer S21 ("Antminer S21/") and Braiins
-	// ("bosminer-plus-tuner", matched anywhere in the string), 16000 for ePIC
-	// ("PowerPlay-BM/") and xminer ("xminer-1."), 6500 for Whatsminer
-	// ("whatsminer/v1") and the Bitaxe ("bitaxe"), 500 for NiceHash, and the
-	// 755-byte Antminer S19 class for everything else. BLAKE2b work serves
-	// every miner COINBASE_TYPE_YUGE (datum_stratum_coinbase_index), so only
-	// the NiceHash minimum difficulty remains.
-	if (strstr(m->useragent, "NiceHash/") == m->useragent) {
-		m->current_diff=524288;
-		m->forced_high_min_diff=524288;
-		return;
-	}
-}
-
 int client_mining_subscribe(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_obj) {
 	uint32_t sid;
 	char s[1024];
@@ -1663,10 +1638,6 @@ int client_mining_subscribe(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_
 	// set default diff
 	m->current_diff = datum_config.stratum_v1_vardiff_min;
 	
-	// The class every miner is served on BLAKE2b work once the full coinbase is
-	// ready (datum_stratum_coinbase_index); kept per miner only for the API.
-	m->coinbase_selection = COINBASE_TYPE_YUGE;
-	
 	m->useragent[0] = 0;
 	if (params_obj) {
 		if (json_is_array(params_obj)) {
@@ -1675,13 +1646,6 @@ int client_mining_subscribe(T_DATUM_CLIENT_DATA *c, uint64_t id, json_t *params_
 				strncpy_uachars(m->useragent, json_string_value(useragent), 127); // strip some chars
 				m->useragent[127] = 0;
 			}
-		}
-	}
-	
-	if ((datum_config.stratum_v1_fingerprint_miners) && (m->useragent[0])) {
-		datum_stratum_fingerprint_by_UA(m);
-		if (m->current_diff < datum_config.stratum_v1_vardiff_min) {
-			m->current_diff = datum_config.stratum_v1_vardiff_min;
 		}
 	}
 	
